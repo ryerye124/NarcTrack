@@ -540,7 +540,7 @@ app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
   try {
     await client.query("BEGIN");
     const uid = req.params.id;
-    const { role, badge, name, username, email } = req.body;
+    const { role, badge, name, username, email, new_password } = req.body;
 
     // Update agency membership fields
     if (role !== undefined || badge !== undefined) {
@@ -555,11 +555,12 @@ app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
       if (!ua) { await client.query("ROLLBACK"); return res.status(404).json({ error: "User not in this agency" }); }
     }
 
-    // Update global user identity fields
+    // Update global user identity fields (including optional password reset)
     const userUpdates = []; const uParams = [];
-    if (name)     { uParams.push(name);                 userUpdates.push(`name=$${uParams.length}`); }
-    if (username) { uParams.push(username.toLowerCase()); userUpdates.push(`username=$${uParams.length}`); }
-    if (email)    { uParams.push(email.toLowerCase());    userUpdates.push(`email=$${uParams.length}`); }
+    if (name)         { uParams.push(name);                              userUpdates.push(`name=$${uParams.length}`); }
+    if (username)     { uParams.push(username.toLowerCase());            userUpdates.push(`username=$${uParams.length}`); }
+    if (email)        { uParams.push(email.toLowerCase());               userUpdates.push(`email=$${uParams.length}`); }
+    if (new_password) { uParams.push(await bcrypt.hash(new_password,12)); userUpdates.push(`password_hash=$${uParams.length}`); }
     if (userUpdates.length) {
       uParams.push(uid);
       await client.query(`UPDATE users SET ${userUpdates.join(",")} WHERE id=$${uParams.length}`, uParams);

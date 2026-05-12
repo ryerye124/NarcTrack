@@ -1387,6 +1387,8 @@ function UsersTab({ currentUser }) {
   const [linkBusy,  setLinkBusy ] = useState(false);
   const [editId,    setEditId   ] = useState(null);
   const [editData,  setEditData ] = useState({});
+  const [resetId,   setResetId  ] = useState(null); // user id whose password is being reset
+  const [resetPw,   setResetPw  ] = useState({ pw: "", pw2: "" });
   const [err,       setErr      ] = useState("");
   const [msg,       setMsg      ] = useState("");
 
@@ -1446,6 +1448,17 @@ function UsersTab({ currentUser }) {
     try {
       await api(`/api/users/${id}`, { method: "DELETE" });
       setMsg(`${name} removed from this agency.`); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function resetPassword(u, e) {
+    e.preventDefault(); setErr("");
+    if (resetPw.pw.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (resetPw.pw !== resetPw.pw2) { setErr("Passwords do not match."); return; }
+    try {
+      await api(`/api/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ new_password: resetPw.pw }) });
+      setMsg(`Password reset for ${u.name}.`);
+      setResetId(null); setResetPw({ pw: "", pw2: "" });
     } catch (ex) { setErr(ex.message); }
   }
 
@@ -1545,59 +1558,93 @@ function UsersTab({ currentUser }) {
               )}
               {users.map(u => {
                 const initials = (u.name || "?").split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
+                const isResetting = resetId === u.id;
                 return (
-                  <tr key={u.id}>
-                    <td style={{ ...S.td, width: 40 }}>
-                      {u.avatar
-                        ? <img src={u.avatar} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover" }} />
-                        : <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff", fontWeight: 700 }}>{initials}</div>
-                      }
-                    </td>
-                    <td style={S.td}>
-                      {editId === u.id
-                        ? <input style={{ ...S.input, width: 130 }} value={editData.name ?? u.name} onChange={e => setEditData(p => ({ ...p, name: e.target.value }))} />
-                        : u.name}
-                    </td>
-                    <td style={S.td}>
-                      {editId === u.id
-                        ? <input style={{ ...S.input, width: 110 }} value={editData.username ?? u.username} onChange={e => setEditData(p => ({ ...p, username: e.target.value }))} />
-                        : u.username}
-                    </td>
-                    <td style={S.td}>
-                      {editId === u.id
-                        ? <input style={{ ...S.input, width: 160 }} type="email" value={editData.email ?? u.email} onChange={e => setEditData(p => ({ ...p, email: e.target.value }))} />
-                        : u.email}
-                    </td>
-                    <td style={S.td}>
-                      {editId === u.id
-                        ? <input style={{ ...S.input, width: 80 }} value={editData.badge ?? u.badge} onChange={e => setEditData(p => ({ ...p, badge: e.target.value }))} />
-                        : u.badge}
-                    </td>
-                    <td style={S.td}>
-                      {editId === u.id ? (
-                        <select style={S.select} value={editData.role ?? u.role} onChange={e => setEditData(p => ({ ...p, role: e.target.value }))}>
-                          <option value="user">User</option>
-                          <option value="admin">Admin</option>
-                          <option value="pending">Pending</option>
-                        </select>
-                      ) : <span style={S.roleBadge(u.role)}>{u.role}</span>}
-                    </td>
-                    <td style={S.td}>
-                      {editId === u.id ? (
-                        <span style={{ display: "flex", gap: 4 }}>
-                          <button style={S.btnSuccess} onClick={() => saveEdit(u.id)}>Save</button>
-                          <button style={S.btnGray} onClick={() => { setEditId(null); setEditData({}); }}>Cancel</button>
-                        </span>
-                      ) : (
-                        <span style={{ display: "flex", gap: 4 }}>
-                          <button style={S.btnGray} onClick={() => { setEditId(u.id); setEditData({}); }}>Edit</button>
-                          {u.id !== currentUser.id && (
-                            <button style={S.btnDanger} onClick={() => removeUser(u.id, u.name)}>Remove</button>
-                          )}
-                        </span>
-                      )}
-                    </td>
-                  </tr>
+                  <>
+                    <tr key={u.id}>
+                      <td style={{ ...S.td, width: 40 }}>
+                        {u.avatar
+                          ? <img src={u.avatar} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover" }} />
+                          : <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff", fontWeight: 700 }}>{initials}</div>
+                        }
+                      </td>
+                      <td style={S.td}>
+                        {editId === u.id
+                          ? <input style={{ ...S.input, width: 130 }} value={editData.name ?? u.name} onChange={e => setEditData(p => ({ ...p, name: e.target.value }))} />
+                          : u.name}
+                      </td>
+                      <td style={S.td}>
+                        {editId === u.id
+                          ? <input style={{ ...S.input, width: 110 }} value={editData.username ?? u.username} onChange={e => setEditData(p => ({ ...p, username: e.target.value }))} />
+                          : u.username}
+                      </td>
+                      <td style={S.td}>
+                        {editId === u.id
+                          ? <input style={{ ...S.input, width: 160 }} type="email" value={editData.email ?? u.email} onChange={e => setEditData(p => ({ ...p, email: e.target.value }))} />
+                          : u.email}
+                      </td>
+                      <td style={S.td}>
+                        {editId === u.id
+                          ? <input style={{ ...S.input, width: 80 }} value={editData.badge ?? u.badge} onChange={e => setEditData(p => ({ ...p, badge: e.target.value }))} />
+                          : u.badge}
+                      </td>
+                      <td style={S.td}>
+                        {editId === u.id ? (
+                          <select style={S.select} value={editData.role ?? u.role} onChange={e => setEditData(p => ({ ...p, role: e.target.value }))}>
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                            <option value="pending">Pending</option>
+                          </select>
+                        ) : <span style={S.roleBadge(u.role)}>{u.role}</span>}
+                      </td>
+                      <td style={S.td}>
+                        {editId === u.id ? (
+                          <span style={{ display: "flex", gap: 4 }}>
+                            <button style={S.btnSuccess} onClick={() => saveEdit(u.id)}>Save</button>
+                            <button style={S.btnGray} onClick={() => { setEditId(null); setEditData({}); }}>Cancel</button>
+                          </span>
+                        ) : (
+                          <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            <button style={S.btnGray} onClick={() => { setEditId(u.id); setEditData({}); setResetId(null); }}>Edit</button>
+                            <button style={{ ...S.btnGray, background: "#f59e0b", color: "#fff" }}
+                              onClick={() => { setResetId(isResetting ? null : u.id); setResetPw({ pw: "", pw2: "" }); setEditId(null); }}>
+                              🔑 {isResetting ? "Cancel" : "Reset PW"}
+                            </button>
+                            {u.id !== currentUser.id && (
+                              <button style={S.btnDanger} onClick={() => removeUser(u.id, u.name)}>Remove</button>
+                            )}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                    {isResetting && (
+                      <tr key={`${u.id}-reset`}>
+                        <td colSpan={7} style={{ ...S.td, background: "#fffbeb", padding: "12px 16px" }}>
+                          <form onSubmit={e => resetPassword(u, e)}
+                            style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#92400e", alignSelf: "center" }}>
+                              🔑 Reset password for <strong>{u.name}</strong>
+                            </div>
+                            <label style={{ ...S.label, margin: 0 }}>
+                              <span style={{ fontSize: 11 }}>New Password</span>
+                              <input style={{ ...S.input, width: 160 }} type="password" required minLength={6}
+                                placeholder="min 6 characters"
+                                value={resetPw.pw} onChange={e => setResetPw(p => ({ ...p, pw: e.target.value }))} />
+                            </label>
+                            <label style={{ ...S.label, margin: 0 }}>
+                              <span style={{ fontSize: 11 }}>Confirm Password</span>
+                              <input style={{ ...S.input, width: 160 }} type="password" required
+                                placeholder="repeat password"
+                                value={resetPw.pw2} onChange={e => setResetPw(p => ({ ...p, pw2: e.target.value }))} />
+                            </label>
+                            <button style={{ ...S.btnPrimary, background: "#f59e0b", alignSelf: "flex-end" }} type="submit">
+                              Set Password
+                            </button>
+                          </form>
+                        </td>
+                      </tr>
+                    )}
+                  </>
                 );
               })}
             </tbody>
