@@ -198,6 +198,20 @@ function LoginPage({ onLogin }) {
   );
 }
 
+// ─── mg/mcg/g → mL calculator ────────────────────────────────────────────────
+// concStr format: "10mg/mL", "0.4mg/mL", "500mcg/mL", "1g/mL", etc.
+function calcML(doseAmount, doseUnit, concStr) {
+  const m = String(concStr).trim().match(/^([\d.]+)\s*(mg|mcg|g)\s*\/\s*mL$/i);
+  if (!m) return null;
+  const concVal  = parseFloat(m[1]);
+  const concUnit = m[2].toLowerCase();
+  const amt      = parseFloat(doseAmount);
+  if (!amt || !concVal) return null;
+  const toMg = (v, u) => u === "mcg" ? v / 1000 : u === "g" ? v * 1000 : v;
+  const ml = toMg(amt, doseUnit.toLowerCase()) / toMg(concVal, concUnit);
+  return Math.round(ml * 10000) / 10000; // 4 decimal places
+}
+
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
 function InventoryTab({ user }) {
   const [inv,      setInv     ] = useState({});
@@ -312,8 +326,10 @@ function InventoryTab({ user }) {
 
 // ─── Log Administration Tab ───────────────────────────────────────────────────
 function LogAdminTab({ user }) {
+  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
   const blank = () => ({
-    stock: "Sub-Stock 1", drug: "", conc: "", dose: "", doseQty: "",
+    stock: availStocks[0], drug: "", conc: "", unit: "",
+    doseAmount: "", doseUnit: "mg",
     route: "IV", runId: "", patientName: "", complaint: "",
     providerNum: user.badge || "", providerName: user.name || "",
     mdName: "", mdSig: "", receivingHospital: "", hospitalRecordNum: "",
@@ -327,19 +343,45 @@ function LogAdminTab({ user }) {
 
   useEffect(() => { api("/api/inventory").then(setInv).catch(() => {}); }, []);
 
-  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
-  const stockDrugs  = inv[form.stock] || [];
+  const stockDrugs = inv[form.stock] || [];
+
+  // Live mL calculation
+  const mlCalc = (form.doseAmount && form.conc)
+    ? calcML(form.doseAmount, form.doseUnit, form.conc)
+    : null;
+
+  function onStockChange(e) {
+    setForm(p => ({ ...p, stock: e.target.value, drug: "", conc: "", unit: "", doseAmount: "", doseUnit: "mg" }));
+  }
+
+  function onDrugChange(e) {
+    const d = (inv[form.stock] || []).find(x => x.drug === e.target.value);
+    setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "", unit: d?.unit || "", doseAmount: "", doseUnit: "mg" }));
+  }
 
   async function submit(e) {
-    e.preventDefault(); setBusy(true); setErr(""); setMsg("");
+    e.preventDefault();
+    if (mlCalc === null) { setErr("Cannot calculate mL — check concentration format (e.g. 10mg/mL)."); return; }
+    setBusy(true); setErr(""); setMsg("");
     try {
-      await api("/api/pending", { method: "POST", body: JSON.stringify(form) });
+      await api("/api/pending", { method: "POST", body: JSON.stringify({
+        ...form,
+        dose:    `${form.doseAmount}${form.doseUnit}`,
+        doseQty: String(mlCalc),
+      })});
       setMsg("Administration submitted — pending admin verification.");
       setForm(blank());
     } catch (ex) { setErr(ex.message); }
     finally { setBusy(false); }
   }
+
+  const readonlyStyle = { ...S.input, background: "#f1f5f9", color: "#64748b", cursor: "default" };
+  const mlStyle = { ...S.input,
+    background: mlCalc !== null ? "#dcfce7" : "#f1f5f9",
+    color:      mlCalc !== null ? "#166534" : "#94a3b8",
+    fontWeight: mlCalc !== null ? 700 : 400,
+    cursor: "default",
+  };
 
   return (
     <div style={S.page}>
@@ -348,49 +390,89 @@ function LogAdminTab({ user }) {
       {msg && <div style={S.okBox}>{msg}</div>}
       <div style={S.card}>
         <form onSubmit={submit} style={S.form3}>
+
+          {/* ── Row 1: Stock / Drug / Concentration ── */}
           <label style={S.label}>Stock Location
-            <select style={S.select} value={form.stock} onChange={f("stock")} required>
+            <select style={S.select} value={form.stock} onChange={onStockChange} required>
               {availStocks.map(s => <option key={s}>{s}</option>)}
             </select>
           </label>
+
           <label style={S.label}>Drug
-            {stockDrugs.length > 0 ? (
-              <select style={S.select} value={form.drug} onChange={e => {
-                const d = stockDrugs.find(x => x.drug === e.target.value);
-                setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "" }));
-              }} required>
-                <option value="">Select drug…</option>
-                {stockDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug}</option>)}
-              </select>
-            ) : (
-              <input style={S.input} value={form.drug} onChange={f("drug")} placeholder="Drug name" required />
-            )}
+            <select style={S.select} value={form.drug} onChange={onDrugChange} required>
+              <option value="">Select drug…</option>
+              {stockDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug}</option>)}
+            </select>
           </label>
-          <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} placeholder="e.g. 10mg/mL" required /></label>
-          <label style={S.label}>Dose Administered<input style={S.input} value={form.dose} onChange={f("dose")} placeholder="e.g. 5mg" required /></label>
-          <label style={S.label}>Qty Withdrawn (mL)<input style={S.input} type="number" min="0.01" step="0.01" value={form.doseQty} onChange={f("doseQty")} required /></label>
+
+          <label style={S.label}>Concentration (auto-filled)
+            <input style={readonlyStyle} value={form.conc} readOnly placeholder="Select a drug first" />
+          </label>
+
+          {/* ── Row 2: Unit / Dose Amount+Unit / mL ── */}
+          <label style={S.label}>Unit (auto-filled)
+            <input style={readonlyStyle} value={form.unit} readOnly placeholder="Auto-filled" />
+          </label>
+
+          <label style={S.label}>Dose Administered
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                style={{ ...S.input, flex: 1 }}
+                type="number" min="0.001" step="any"
+                value={form.doseAmount}
+                onChange={e => setForm(p => ({ ...p, doseAmount: e.target.value }))}
+                placeholder="Enter amount"
+                required
+              />
+              <select
+                style={{ ...S.select, width: 72 }}
+                value={form.doseUnit}
+                onChange={e => setForm(p => ({ ...p, doseUnit: e.target.value }))}>
+                <option value="mg">mg</option>
+                <option value="mcg">mcg</option>
+                <option value="g">g</option>
+              </select>
+            </div>
+          </label>
+
+          <label style={S.label}>Volume Withdrawn (auto-calculated mL)
+            <input
+              style={mlStyle}
+              value={mlCalc !== null ? `${mlCalc} mL` : ""}
+              readOnly
+              placeholder="Enter dose + select drug first"
+            />
+          </label>
+
+          {/* ── Remaining fields ── */}
           <label style={S.label}>Route
-            <select style={S.select} value={form.route} onChange={f("route")} required>
+            <select style={S.select} value={form.route} onChange={e => setForm(p => ({ ...p, route: e.target.value }))} required>
               {ROUTES_LIST.map(r => <option key={r}>{r}</option>)}
             </select>
           </label>
-          <label style={S.label}>Run / Call ID<input style={S.input} value={form.runId} onChange={f("runId")} required /></label>
-          <label style={S.label}>Patient Name<input style={S.input} value={form.patientName} onChange={f("patientName")} required /></label>
-          <label style={S.label}>Chief Complaint<input style={S.input} value={form.complaint} onChange={f("complaint")} /></label>
-          <label style={S.label}>Provider # (AEMT)<input style={S.input} value={form.providerNum} onChange={f("providerNum")} required /></label>
-          <label style={S.label}>Provider Name<input style={S.input} value={form.providerName} onChange={f("providerName")} required /></label>
-          <label style={S.label}>Ordering Physician<input style={S.input} value={form.mdName} onChange={f("mdName")} required /></label>
-          <label style={S.label}>MD Authorization / Sig<input style={S.input} value={form.mdSig} onChange={f("mdSig")} /></label>
-          <label style={S.label}>Receiving Hospital<input style={S.input} value={form.receivingHospital} onChange={f("receivingHospital")} required /></label>
-          <label style={S.label}>Hospital Record #<input style={S.input} value={form.hospitalRecordNum} onChange={f("hospitalRecordNum")} /></label>
-          <label style={S.label}>Witness<input style={S.input} value={form.witness} onChange={f("witness")} required /></label>
-          <label style={S.label}>Waste Amount (mL)<input style={S.input} type="number" min="0" step="0.01" value={form.wasteAmt} onChange={f("wasteAmt")} /></label>
-          <label style={S.label}>Waste Witness<input style={S.input} value={form.wasteWitness} onChange={f("wasteWitness")} /></label>
-          <label style={S.label}>Waste Reason<input style={S.input} value={form.wasteReason} onChange={f("wasteReason")} /></label>
-          <div style={{ gridColumn: "1/-1" }}>
-            <button style={S.btnPrimary} type="submit" disabled={busy}>
+          <label style={S.label}>Run / Call ID<input style={S.input} value={form.runId} onChange={e => setForm(p => ({ ...p, runId: e.target.value }))} required /></label>
+          <label style={S.label}>Patient Name<input style={S.input} value={form.patientName} onChange={e => setForm(p => ({ ...p, patientName: e.target.value }))} required /></label>
+          <label style={S.label}>Chief Complaint<input style={S.input} value={form.complaint} onChange={e => setForm(p => ({ ...p, complaint: e.target.value }))} /></label>
+          <label style={S.label}>Provider # (AEMT)<input style={S.input} value={form.providerNum} onChange={e => setForm(p => ({ ...p, providerNum: e.target.value }))} required /></label>
+          <label style={S.label}>Provider Name<input style={S.input} value={form.providerName} onChange={e => setForm(p => ({ ...p, providerName: e.target.value }))} required /></label>
+          <label style={S.label}>Ordering Physician<input style={S.input} value={form.mdName} onChange={e => setForm(p => ({ ...p, mdName: e.target.value }))} required /></label>
+          <label style={S.label}>MD Authorization / Sig<input style={S.input} value={form.mdSig} onChange={e => setForm(p => ({ ...p, mdSig: e.target.value }))} /></label>
+          <label style={S.label}>Receiving Hospital<input style={S.input} value={form.receivingHospital} onChange={e => setForm(p => ({ ...p, receivingHospital: e.target.value }))} required /></label>
+          <label style={S.label}>Hospital Record #<input style={S.input} value={form.hospitalRecordNum} onChange={e => setForm(p => ({ ...p, hospitalRecordNum: e.target.value }))} /></label>
+          <label style={S.label}>Witness<input style={S.input} value={form.witness} onChange={e => setForm(p => ({ ...p, witness: e.target.value }))} required /></label>
+          <label style={S.label}>Waste Amount (mL)<input style={S.input} type="number" min="0" step="0.01" value={form.wasteAmt} onChange={e => setForm(p => ({ ...p, wasteAmt: e.target.value }))} /></label>
+          <label style={S.label}>Waste Witness<input style={S.input} value={form.wasteWitness} onChange={e => setForm(p => ({ ...p, wasteWitness: e.target.value }))} /></label>
+          <label style={S.label}>Waste Reason<input style={S.input} value={form.wasteReason} onChange={e => setForm(p => ({ ...p, wasteReason: e.target.value }))} /></label>
+
+          <div style={{ gridColumn: "1/-1", display: "flex", alignItems: "center", gap: 12 }}>
+            <button style={S.btnPrimary} type="submit" disabled={busy || mlCalc === null}>
               {busy ? "Submitting…" : "Submit Administration Record"}
             </button>
+            {mlCalc === null && form.doseAmount && form.conc && (
+              <span style={{ fontSize: 12, color: "#dc2626" }}>
+                ⚠ Concentration format not recognized — use e.g. "10mg/mL" or "500mcg/mL"
+              </span>
+            )}
           </div>
         </form>
       </div>
@@ -645,7 +727,7 @@ function PurchasesTab() {
 // ─── Transfers Tab ────────────────────────────────────────────────────────────
 function TransfersTab({ user }) {
   const now  = new Date();
-  const blank = () => ({ fromStock: "Main Stock", toStock: "Sub-Stock 1", drug: "", conc: "", unit: "mL", qty: "", transferredBy: user.name || "", witness: "" });
+  const blank = () => ({ fromStock: "Main Stock", toStock: "929", drug: "", conc: "", unit: "", qty: "", transferredBy: user.name || "", witness: "" });
   const [records,  setRecords ] = useState([]);
   const [loading,  setLoading ] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -707,15 +789,19 @@ function TransfersTab({ user }) {
               {fromDrugs.length > 0 ? (
                 <select style={S.select} value={form.drug} onChange={e => {
                   const d = fromDrugs.find(x => x.drug === e.target.value);
-                  setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "" }));
+                  setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "", unit: d?.unit || "" }));
                 }} required>
                   <option value="">Select…</option>
                   {fromDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug} ({d.qty} {d.unit} avail.)</option>)}
                 </select>
               ) : <input style={S.input} value={form.drug} onChange={f("drug")} required />}
             </label>
-            <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
-            <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} /></label>
+            <label style={S.label}>Concentration
+              <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value={form.conc} readOnly placeholder="Auto-filled when drug selected" />
+            </label>
+            <label style={S.label}>Unit
+              <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value={form.unit} readOnly placeholder="Auto-filled" />
+            </label>
             <label style={S.label}>Quantity<input style={S.input} type="number" min="0.01" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
             <label style={S.label}>Transferred By<input style={S.input} value={form.transferredBy} onChange={f("transferredBy")} required /></label>
             <label style={S.label}>Witness<input style={S.input} value={form.witness} onChange={f("witness")} required /></label>
@@ -753,7 +839,7 @@ function TransfersTab({ user }) {
 // ─── Waste Tab ────────────────────────────────────────────────────────────────
 function WasteTab({ user }) {
   const now  = new Date();
-  const blank = () => ({ stock: "Sub-Stock 1", drug: "", conc: "", unit: "mL", qty: "", reason: "", disposedBy: user.name || "", witness: "", method: "Inactivation Kit" });
+  const blank = () => ({ stock: "929", drug: "", conc: "", unit: "", qty: "", reason: "", disposedBy: user.name || "", witness: "", method: "Inactivation Kit" });
   const [records,  setRecords ] = useState([]);
   const [loading,  setLoading ] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -806,15 +892,19 @@ function WasteTab({ user }) {
               {stockDrugs.length > 0 ? (
                 <select style={S.select} value={form.drug} onChange={e => {
                   const d = stockDrugs.find(x => x.drug === e.target.value);
-                  setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "" }));
+                  setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "", unit: d?.unit || "" }));
                 }} required>
                   <option value="">Select…</option>
                   {stockDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug}</option>)}
                 </select>
               ) : <input style={S.input} value={form.drug} onChange={f("drug")} required />}
             </label>
-            <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
-            <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} /></label>
+            <label style={S.label}>Concentration
+              <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value={form.conc} readOnly placeholder="Auto-filled when drug selected" />
+            </label>
+            <label style={S.label}>Unit
+              <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value={form.unit} readOnly placeholder="Auto-filled" />
+            </label>
             <label style={S.label}>Quantity<input style={S.input} type="number" min="0.01" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
             <label style={S.label}>Reason<input style={S.input} value={form.reason} onChange={f("reason")} required /></label>
             <label style={S.label}>Disposed By<input style={S.input} value={form.disposedBy} onChange={f("disposedBy")} required /></label>
