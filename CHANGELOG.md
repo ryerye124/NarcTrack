@@ -3,6 +3,19 @@ NYS 10 NYCRR §80.136 Controlled Substance Management
 
 ---
 
+## [v1.2.1] — 2026-05-12 — Hotfix: Non-Admin Login 404
+
+### Bugs Reported & Fixed
+
+| ID | Severity | Component | Description | Status |
+|---|---|---|---|---|
+| BUG-008 | 🔴 Critical | Vercel / Auth | Non-admin users got 404 on login. Root cause: no `vercel.json` SPA routing config. Vercel serves 404 for any URL that isn't `/`. Google OAuth callback redirects to `/auth-callback?token=…` — Vercel had no file there → 404. Admin was unaffected because admin uses local username/password login which never leaves `/`. | ✅ Fixed |
+
+### Changes
+- Added `narcotrack-frontend/vercel.json` with `"rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]` — all paths now served by the React app; React Router handles client-side routing internally.
+
+---
+
 ## [v1.2.0] — 2026-05-12 — Bug Fix Release
 
 ### Bugs Reported & Fixed
