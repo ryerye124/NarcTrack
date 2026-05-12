@@ -251,6 +251,11 @@ function LoginPage({ onLogin }) {
             Select an agency above to enable Google sign-in
           </p>
         )}
+        <div style={{ textAlign: "center", marginTop: 20, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
+          <a href="/sysadmin" style={{ fontSize: 11, color: "#94a3b8", textDecoration: "none" }}>
+            🛡️ System Administrator Login
+          </a>
+        </div>
       </div>
     </div>
   );
@@ -1795,25 +1800,38 @@ function ProfileTab({ user }) {
   );
 }
 
+// ─── Default tab configuration (used when agency has no custom tab_config) ────
+const DEFAULT_TAB_CONFIG = [
+  { id: "inventory",    label: "Inventory",          icon: "📦", adminOnly: true,  visible: true },
+  { id: "log-admin",    label: "Log Administration", icon: "💉", adminOnly: false, visible: true },
+  { id: "pending",      label: "Pending",            icon: "⏳", adminOnly: true,  visible: true },
+  { id: "admin-log",    label: "Admin Log",          icon: "📋", adminOnly: false, visible: true },
+  { id: "purchases",    label: "Purchases",          icon: "🛒", adminOnly: true,  visible: true },
+  { id: "transfers",    label: "Transfers",          icon: "🔄", adminOnly: false, visible: true },
+  { id: "waste",        label: "Waste",              icon: "🗑️", adminOnly: false, visible: true },
+  { id: "audits",       label: "Audits",             icon: "🔍", adminOnly: false, visible: true },
+  { id: "monthly-logs", label: "Monthly Logs",       icon: "📅", adminOnly: true,  visible: true },
+  { id: "users",        label: "Users",              icon: "👥", adminOnly: true,  visible: true },
+  { id: "profile",      label: "My Profile",         icon: "👤", adminOnly: false, visible: true },
+];
+
 // ─── Main App Shell ───────────────────────────────────────────────────────────
 function MainApp({ user, onLogout }) {
-  const isAdmin = user.role === "admin";
-  const tabs = [
-    { id: "inventory",    label: "Inventory",          show: isAdmin },  // admin only — users cannot view/manage inventory
-    { id: "log-admin",    label: "Log Administration", show: true },
-    { id: "pending",      label: "Pending",            show: isAdmin },
-    { id: "admin-log",    label: "Admin Log",          show: true },
-    { id: "purchases",    label: "Purchases",          show: isAdmin },
-    { id: "transfers",    label: "Transfers",          show: true },
-    { id: "waste",        label: "Waste",              show: true },
-    { id: "audits",       label: "Audits",             show: true },
-    { id: "monthly-logs", label: "Monthly Logs",       show: isAdmin },
-    { id: "users",        label: "Users",              show: isAdmin },
-    { id: "profile",      label: "My Profile",         show: true },
-  ].filter(t => t.show);
+  const isAdmin  = user.role === "admin";
+  const navColor = user.agency_nav     || "#1e293b";
+  const accent   = user.agency_accent  || "#38bdf8";
 
-  // Default tab: admin → inventory, user → log-admin
-  const [tab, setTab] = useState(isAdmin ? "inventory" : "log-admin");
+  // Use agency tab config from JWT if present, else fall back to defaults
+  const tabConfig = (user.agency_tabs && user.agency_tabs.length)
+    ? user.agency_tabs
+    : DEFAULT_TAB_CONFIG;
+
+  const tabs = tabConfig
+    .filter(t => t.visible !== false)
+    .filter(t => !t.adminOnly || isAdmin);
+
+  const firstTab = tabs[0]?.id || "log-admin";
+  const [tab, setTab] = useState(firstTab);
 
   const renderTab = () => {
     switch (tab) {
@@ -1834,20 +1852,460 @@ function MainApp({ user, onLogout }) {
 
   return (
     <div style={S.app}>
-      <nav style={S.nav}>
-        <span style={S.navTitle}>🚑 NarcTrack EMS</span>
+      <nav style={{ ...S.nav, background: navColor }}>
+        <span style={S.navTitle}>🚑 {user.agency_name || "NarcTrack EMS"}</span>
         {tabs.map(t => (
-          <button key={t.id} style={S.navTab(tab === t.id)} onClick={() => setTab(t.id)}>
-            {t.label}
+          <button key={t.id}
+            style={{ ...S.navTab(tab === t.id), color: tab === t.id ? accent : "#94a3b8",
+                     borderBottomColor: tab === t.id ? accent : "transparent" }}
+            onClick={() => setTab(t.id)}>
+            {t.icon && <span style={{ marginRight: 4 }}>{t.icon}</span>}{t.label}
           </button>
         ))}
         <div style={S.navUser}>
           <NavAvatar user={user} />
-          <span>{user.name} · <span style={{ color: isAdmin ? "#818cf8" : "#38bdf8" }}>{user.role}</span></span>
+          <span>{user.name} · <span style={{ color: isAdmin ? "#818cf8" : accent }}>{user.role}</span></span>
           <button style={S.logoutBtn} onClick={onLogout}>Sign Out</button>
         </div>
       </nav>
       {renderTab()}
+    </div>
+  );
+}
+
+// ─── System Admin Login Page — /sysadmin ─────────────────────────────────────
+function SysAdminLoginPage({ onLogin }) {
+  const [form, setForm] = useState({ username: "", password: "" });
+  const [err,  setErr ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  async function submit(e) {
+    e.preventDefault(); setBusy(true); setErr("");
+    try {
+      const res  = await fetch(`${API}/api/login`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form), // no agency_id
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Login failed");
+      if (body.role !== "sysadmin") throw new Error("This login is for system administrators only.");
+      saveToken(body.token);
+      onLogin(decodeJwt(body.token));
+    } catch (ex) { setErr(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ ...S.loginWrap, background: "#0a0f1e" }}>
+      <div style={{ ...S.loginCard, border: "2px solid #6366f1" }}>
+        <div style={{ textAlign: "center", marginBottom: 8 }}>
+          <span style={{ fontSize: 36 }}>🛡️</span>
+        </div>
+        <h1 style={{ ...S.loginTitle, color: "#6366f1" }}>System Admin</h1>
+        <p style={S.loginSub}>NarcTrack Platform Management</p>
+        {err && <div style={S.errBox}>{err}</div>}
+        <form onSubmit={submit}>
+          <input style={S.loginInput} placeholder="Username" value={form.username} onChange={f("username")} required autoFocus />
+          <input style={S.loginInput} type="password" placeholder="Password" value={form.password} onChange={f("password")} required />
+          <button style={{ ...S.loginBtn, background: "#6366f1" }} type="submit" disabled={busy}>
+            {busy ? "Signing in…" : "Sign In as System Admin"}
+          </button>
+        </form>
+        <div style={{ textAlign: "center", marginTop: 16 }}>
+          <a href="/login" style={{ fontSize: 12, color: "#6366f1" }}>← Back to agency login</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── System Admin Dashboard ───────────────────────────────────────────────────
+function SysAdminApp({ user, onLogout }) {
+  const [panel, setPanel] = useState("agencies");
+
+  const navStyle = { background: "#0f0a2e", color: "#fff", padding: "0 20px",
+                     display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" };
+  const tabStyle = active => ({ padding: "13px 14px", cursor: "pointer", border: "none",
+                                background: "none", color: active ? "#a5b4fc" : "#94a3b8",
+                                borderBottom: active ? "2px solid #a5b4fc" : "2px solid transparent",
+                                fontWeight: active ? 600 : 400, fontSize: 13 });
+  return (
+    <div style={S.app}>
+      <nav style={navStyle}>
+        <span style={{ ...S.navTitle, color: "#a5b4fc" }}>🛡️ NarcTrack System Admin</span>
+        {[["agencies","🏢 Agencies"],["users","👥 All Users"]].map(([id, label]) => (
+          <button key={id} style={tabStyle(panel === id)} onClick={() => setPanel(id)}>{label}</button>
+        ))}
+        <div style={S.navUser}>
+          <span style={{ color: "#a5b4fc", fontWeight: 600 }}>{user.name}</span>
+          <button style={S.logoutBtn} onClick={onLogout}>Sign Out</button>
+        </div>
+      </nav>
+      <div style={S.page}>
+        {panel === "agencies" && <SysAdminAgencies />}
+        {panel === "users"    && <SysAdminUsers />}
+      </div>
+    </div>
+  );
+}
+
+// ─── Sys Admin: Agencies Panel ────────────────────────────────────────────────
+function SysAdminAgencies() {
+  const [agencies,  setAgencies ] = useState([]);
+  const [loading,   setLoading  ] = useState(true);
+  const [showNew,   setShowNew  ] = useState(false);
+  const [expandId,  setExpandId ] = useState(null);
+  const [err,       setErr      ] = useState("");
+  const [msg,       setMsg      ] = useState("");
+
+  const blankNew = () => ({ name:"", slug:"", primary_color:"#3b82f6",
+                             nav_color:"#1e293b", accent_color:"#38bdf8",
+                             stocks:["Main Stock","Sub-Stock 1"] });
+  const [newForm, setNewForm] = useState(blankNew());
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setAgencies(await api("/api/sysadmin/agencies")); }
+    catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function createAgency(e) {
+    e.preventDefault(); setErr("");
+    try {
+      await api("/api/sysadmin/agencies", { method: "POST", body: JSON.stringify(newForm) });
+      setMsg("Agency created."); setShowNew(false); setNewForm(blankNew()); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function deleteAgency(ag) {
+    if (!window.confirm(`Delete "${ag.name}"? This cannot be undone.`)) return;
+    try { await api(`/api/sysadmin/agencies/${ag.id}`, { method: "DELETE" }); setMsg("Agency deleted."); load(); }
+    catch (ex) { setErr(ex.message); }
+  }
+
+  const fNew = k => e => setNewForm(p => ({ ...p, [k]: e.target.value }));
+
+  return (
+    <div>
+      <div style={{ ...S.row, justifyContent: "space-between", marginBottom: 16 }}>
+        <h2 style={S.h2}>Agencies</h2>
+        <button style={{ ...S.btnPrimary, background: "#6366f1" }} onClick={() => setShowNew(v => !v)}>
+          + New Agency
+        </button>
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+
+      {showNew && (
+        <div style={{ ...S.card, border: "2px solid #6366f1" }}>
+          <h3 style={{ ...S.h3, color: "#6366f1" }}>Create New Agency</h3>
+          <form onSubmit={createAgency} style={S.form3}>
+            <label style={S.label}>Agency Name<input style={S.input} value={newForm.name} onChange={fNew("name")} required /></label>
+            <label style={S.label}>Slug (URL-safe ID)<input style={S.input} value={newForm.slug} onChange={fNew("slug")} placeholder="e.g. my-ems-agency" required /></label>
+            <label style={S.label}>Stock Locations
+              <input style={S.input} value={newForm.stocks.join(", ")}
+                onChange={e => setNewForm(p => ({ ...p, stocks: e.target.value.split(",").map(s => s.trim()).filter(Boolean) }))}
+                placeholder="Main Stock, Sub-Stock 1" />
+            </label>
+            <label style={S.label}>Nav Color<input type="color" style={{ ...S.input, height: 38, padding: 2 }} value={newForm.nav_color} onChange={fNew("nav_color")} /></label>
+            <label style={S.label}>Primary Color<input type="color" style={{ ...S.input, height: 38, padding: 2 }} value={newForm.primary_color} onChange={fNew("primary_color")} /></label>
+            <label style={S.label}>Accent Color<input type="color" style={{ ...S.input, height: 38, padding: 2 }} value={newForm.accent_color} onChange={fNew("accent_color")} /></label>
+            <div style={{ gridColumn: "1/-1", display: "flex", gap: 8 }}>
+              <button style={{ ...S.btnPrimary, background: "#6366f1" }} type="submit">Create</button>
+              <button style={{ ...S.btn, background: "#e2e8f0", color: "#475569" }} type="button" onClick={() => setShowNew(false)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))" }}>
+          {agencies.map(ag => (
+            <AgencyCard key={ag.id} agency={ag} expanded={expandId === ag.id}
+              onToggle={() => setExpandId(expandId === ag.id ? null : ag.id)}
+              onSaved={() => { setMsg(`${ag.name} updated.`); load(); }}
+              onDelete={() => deleteAgency(ag)}
+              onErr={setErr} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Agency Card (expandable editor) ─────────────────────────────────────────
+function AgencyCard({ agency, expanded, onToggle, onSaved, onDelete, onErr }) {
+  const [form, setForm] = useState({
+    name:          agency.name,
+    slug:          agency.slug,
+    nav_color:     agency.nav_color,
+    primary_color: agency.primary_color,
+    accent_color:  agency.accent_color,
+    stocks:        Array.isArray(agency.stocks) ? agency.stocks : JSON.parse(agency.stocks || "[]"),
+    tab_config:    agency.tab_config || DEFAULT_TAB_CONFIG,
+  });
+  const [busy,    setBusy   ] = useState(false);
+  const [newStock, setNewStock] = useState("");
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  // Keep form in sync when agency prop updates
+  useEffect(() => {
+    setForm({
+      name:          agency.name,
+      slug:          agency.slug,
+      nav_color:     agency.nav_color,
+      primary_color: agency.primary_color,
+      accent_color:  agency.accent_color,
+      stocks:        Array.isArray(agency.stocks) ? agency.stocks : JSON.parse(agency.stocks || "[]"),
+      tab_config:    agency.tab_config || DEFAULT_TAB_CONFIG,
+    });
+  }, [agency]);
+
+  async function save(e) {
+    e.preventDefault(); setBusy(true); onErr("");
+    try {
+      await api(`/api/sysadmin/agencies/${agency.id}`, { method: "PATCH", body: JSON.stringify(form) });
+      onSaved();
+    } catch (ex) { onErr(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  // ── Tab config helpers ──
+  const moveTab = (idx, dir) => {
+    const tc = [...form.tab_config];
+    const swap = idx + dir;
+    if (swap < 0 || swap >= tc.length) return;
+    [tc[idx], tc[swap]] = [tc[swap], tc[idx]];
+    setForm(p => ({ ...p, tab_config: tc }));
+  };
+  const updateTab = (idx, key, val) => {
+    const tc = form.tab_config.map((t, i) => i === idx ? { ...t, [key]: val } : t);
+    setForm(p => ({ ...p, tab_config: tc }));
+  };
+
+  // ── Stock helpers ──
+  const addStock = () => {
+    const s = newStock.trim();
+    if (!s || form.stocks.includes(s)) return;
+    setForm(p => ({ ...p, stocks: [...p.stocks, s] }));
+    setNewStock("");
+  };
+  const removeStock = s => setForm(p => ({ ...p, stocks: p.stocks.filter(x => x !== s) }));
+
+  const previewNav = { background: form.nav_color, color: "#fff", padding: "8px 14px",
+                        borderRadius: 6, marginBottom: 12, display: "flex", alignItems: "center",
+                        gap: 8, fontSize: 13, fontWeight: 600 };
+
+  return (
+    <div style={{ ...S.card, padding: 0, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ background: agency.nav_color, padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{agency.name}</div>
+          <div style={{ color: "rgba(255,255,255,.6)", fontSize: 11, marginTop: 2 }}>
+            {agency.user_count} user{agency.user_count !== 1 ? "s" : ""} · {agency.admin_count} admin{agency.admin_count !== 1 ? "s" : ""}
+          </div>
+        </div>
+        <span style={{ display: "flex", gap: 6 }}>
+          <button style={{ ...S.btnGray, fontSize: 11 }} onClick={onToggle}>
+            {expanded ? "▲ Collapse" : "✏️ Edit"}
+          </button>
+          <button style={{ ...S.btnDanger, fontSize: 11 }} onClick={onDelete}>🗑️</button>
+        </span>
+      </div>
+
+      {/* Color preview strip */}
+      <div style={{ display: "flex", height: 6 }}>
+        <div style={{ flex: 1, background: agency.nav_color }} />
+        <div style={{ flex: 1, background: agency.primary_color }} />
+        <div style={{ flex: 1, background: agency.accent_color }} />
+      </div>
+
+      {expanded && (
+        <form onSubmit={save} style={{ padding: 16 }}>
+          {/* Live color preview */}
+          <div style={previewNav}>
+            <span>🚑</span>
+            <span>{form.name || "Agency Name"}</span>
+            <span style={{ marginLeft: "auto", color: form.accent_color, fontSize: 11 }}>◉ active tab</span>
+          </div>
+
+          {/* ── Identity ── */}
+          <h4 style={{ margin: "0 0 8px", fontSize: 13, color: "#475569" }}>Identity</h4>
+          <div style={S.form2}>
+            <label style={S.label}>Agency Name<input style={S.input} value={form.name} onChange={f("name")} required /></label>
+            <label style={S.label}>Slug<input style={S.input} value={form.slug} onChange={f("slug")} /></label>
+          </div>
+
+          {/* ── Colors ── */}
+          <h4 style={{ margin: "12px 0 8px", fontSize: 13, color: "#475569" }}>Colors</h4>
+          <div style={S.form3}>
+            <label style={S.label}>
+              Nav Bar
+              <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="color" style={{ width: 40, height: 32, border: "1px solid #cbd5e1", borderRadius: 4, padding: 2, cursor: "pointer" }}
+                  value={form.nav_color} onChange={f("nav_color")} />
+                <input style={{ ...S.input, flex: 1, fontFamily: "monospace" }} value={form.nav_color} onChange={f("nav_color")} maxLength={7} />
+              </span>
+            </label>
+            <label style={S.label}>
+              Primary
+              <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="color" style={{ width: 40, height: 32, border: "1px solid #cbd5e1", borderRadius: 4, padding: 2, cursor: "pointer" }}
+                  value={form.primary_color} onChange={f("primary_color")} />
+                <input style={{ ...S.input, flex: 1, fontFamily: "monospace" }} value={form.primary_color} onChange={f("primary_color")} maxLength={7} />
+              </span>
+            </label>
+            <label style={S.label}>
+              Accent (active tabs)
+              <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="color" style={{ width: 40, height: 32, border: "1px solid #cbd5e1", borderRadius: 4, padding: 2, cursor: "pointer" }}
+                  value={form.accent_color} onChange={f("accent_color")} />
+                <input style={{ ...S.input, flex: 1, fontFamily: "monospace" }} value={form.accent_color} onChange={f("accent_color")} maxLength={7} />
+              </span>
+            </label>
+          </div>
+
+          {/* ── Stock locations ── */}
+          <h4 style={{ margin: "12px 0 8px", fontSize: 13, color: "#475569" }}>Stock Locations</h4>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {form.stocks.map(s => (
+              <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#f1f5f9", border: "1px solid #e2e8f0", borderRadius: 20, padding: "3px 10px", fontSize: 12 }}>
+                {s}
+                <button type="button" onClick={() => removeStock(s)}
+                  style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+              </span>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+            <input style={{ ...S.input, flex: 1 }} value={newStock} onChange={e => setNewStock(e.target.value)}
+              placeholder="New stock name…" onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addStock())} />
+            <button type="button" style={S.btnPrimary} onClick={addStock}>Add</button>
+          </div>
+
+          {/* ── Tab configuration ── */}
+          <h4 style={{ margin: "0 0 8px", fontSize: 13, color: "#475569" }}>Tab Configuration</h4>
+          <div style={{ background: "#f8fafc", borderRadius: 6, padding: 8, marginBottom: 16 }}>
+            {form.tab_config.map((t, idx) => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px",
+                                       background: t.visible ? "#fff" : "#f8fafc",
+                                       border: "1px solid #e2e8f0", borderRadius: 4, marginBottom: 4 }}>
+                {/* Visibility toggle */}
+                <input type="checkbox" checked={t.visible !== false} style={{ cursor: "pointer" }}
+                  onChange={e => updateTab(idx, "visible", e.target.checked)} title="Visible" />
+                {/* Icon */}
+                <input style={{ ...S.input, width: 40, textAlign: "center", padding: "3px", fontSize: 16 }}
+                  value={t.icon || ""} onChange={e => updateTab(idx, "icon", e.target.value)}
+                  title="Emoji icon" maxLength={2} />
+                {/* Label */}
+                <input style={{ ...S.input, flex: 1 }} value={t.label}
+                  onChange={e => updateTab(idx, "label", e.target.value)} />
+                {/* Admin-only toggle */}
+                <label style={{ fontSize: 11, color: "#64748b", whiteSpace: "nowrap", display: "flex", gap: 3, alignItems: "center", cursor: "pointer" }}>
+                  <input type="checkbox" checked={t.adminOnly === true}
+                    onChange={e => updateTab(idx, "adminOnly", e.target.checked)} />
+                  Admin only
+                </label>
+                {/* Reorder */}
+                <button type="button" style={{ ...S.btn, padding: "2px 6px", background: "#e2e8f0", color: "#475569", fontSize: 12 }}
+                  onClick={() => moveTab(idx, -1)} disabled={idx === 0}>▲</button>
+                <button type="button" style={{ ...S.btn, padding: "2px 6px", background: "#e2e8f0", color: "#475569", fontSize: 12 }}
+                  onClick={() => moveTab(idx, 1)} disabled={idx === form.tab_config.length - 1}>▼</button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={{ ...S.btnPrimary, background: "#6366f1" }} type="submit" disabled={busy}>
+              {busy ? "Saving…" : "💾 Save Changes"}
+            </button>
+            <button type="button" style={{ ...S.btn, background: "#e2e8f0", color: "#475569" }} onClick={onToggle}>Cancel</button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+// ─── Sys Admin: All Users Panel ───────────────────────────────────────────────
+function SysAdminUsers() {
+  const [users,   setUsers  ] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err,     setErr    ] = useState("");
+  const [msg,     setMsg    ] = useState("");
+  const [filter,  setFilter ] = useState("");
+
+  useEffect(() => {
+    api("/api/sysadmin/users")
+      .then(setUsers)
+      .catch(ex => setErr(ex.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function toggleSysAdmin(u) {
+    const isSys = u.global_role === "sysadmin";
+    if (!window.confirm(isSys ? `Remove sysadmin from ${u.name}?` : `Grant sysadmin to ${u.name}?`)) return;
+    try {
+      await api(`/api/sysadmin/users/${u.id}`, { method: "PATCH",
+        body: JSON.stringify({ global_role: isSys ? null : "sysadmin" }) });
+      setMsg(`${u.name} updated.`);
+      setUsers(prev => prev.map(x => x.id === u.id ? { ...x, global_role: isSys ? null : "sysadmin" } : x));
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  const filtered = users.filter(u =>
+    !filter || (u.name||"").toLowerCase().includes(filter.toLowerCase()) ||
+    (u.email||"").toLowerCase().includes(filter.toLowerCase()) ||
+    (u.username||"").toLowerCase().includes(filter.toLowerCase())
+  );
+
+  return (
+    <div>
+      <h2 style={{ ...S.h2, marginBottom: 16 }}>All Users ({users.length})</h2>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+      <input style={{ ...S.input, maxWidth: 320, marginBottom: 16 }} placeholder="Filter by name / email…"
+        value={filter} onChange={e => setFilter(e.target.value)} />
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <table style={S.tbl}>
+            <thead><tr>{["Name","Username","Email","Agencies","Sys Admin","Actions"].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {filtered.map(u => (
+                <tr key={u.id}>
+                  <td style={S.td}><strong>{u.name||"—"}</strong></td>
+                  <td style={S.td}>{u.username||"—"}</td>
+                  <td style={S.td}>{u.email||"—"}</td>
+                  <td style={S.td}>
+                    {(u.memberships||[]).map(m => (
+                      <span key={m.agency_id} style={{ display: "inline-block", marginRight: 4, marginBottom: 2,
+                                                       padding: "1px 6px", borderRadius: 10, fontSize: 11,
+                                                       background: "#ede9fe", color: "#6d28d9" }}>
+                        {m.agency_name} · {m.role}
+                      </span>
+                    ))}
+                    {(!u.memberships || u.memberships.length === 0) && <span style={{ color: "#94a3b8", fontSize: 11 }}>No agencies</span>}
+                  </td>
+                  <td style={S.td}>
+                    {u.global_role === "sysadmin"
+                      ? <span style={{ color: "#6366f1", fontWeight: 700 }}>🛡️ Yes</span>
+                      : <span style={{ color: "#94a3b8" }}>—</span>}
+                  </td>
+                  <td style={S.td}>
+                    <button style={u.global_role === "sysadmin" ? S.btnDanger : S.btnGray}
+                      onClick={() => toggleSysAdmin(u)} title={u.global_role === "sysadmin" ? "Remove sysadmin" : "Grant sysadmin"}>
+                      {u.global_role === "sysadmin" ? "Revoke 🛡️" : "Grant 🛡️"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -1865,15 +2323,28 @@ export default function App() {
   const handleLogin  = decoded => setUser(decoded);
   const handleLogout = ()      => { clearToken(); setUser(null); };
 
+  const isSysAdmin = user?.role === "sysadmin";
+
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/auth-callback" element={<AuthCallback />} />
         <Route path="/login" element={
-          user ? <Navigate to="/" replace /> : <LoginPage onLogin={handleLogin} />
+          user ? <Navigate to={isSysAdmin ? "/sysadmin" : "/"} replace /> : <LoginPage onLogin={handleLogin} />
+        } />
+        <Route path="/sysadmin" element={
+          isSysAdmin
+            ? <SysAdminApp user={user} onLogout={handleLogout} />
+            : user
+              ? <Navigate to="/" replace />
+              : <SysAdminLoginPage onLogin={decoded => { handleLogin(decoded); }} />
         } />
         <Route path="/" element={
-          user ? <MainApp user={user} onLogout={handleLogout} /> : <Navigate to="/login" replace />
+          user && !isSysAdmin
+            ? <MainApp user={user} onLogout={handleLogout} />
+            : user && isSysAdmin
+              ? <Navigate to="/sysadmin" replace />
+              : <Navigate to="/login" replace />
         } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

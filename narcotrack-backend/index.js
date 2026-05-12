@@ -89,7 +89,21 @@ async function migrate() {
       EXCEPTION WHEN duplicate_table THEN NULL; END $$;
     `);
 
-    // 8. user_agencies junction table — one user can belong to many agencies
+    // 8. Global role on users (sysadmin lives here, not in user_agencies)
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS global_role VARCHAR(20)`);
+
+    // 9. Tab/icon config per agency (JSON array of tab objects)
+    await client.query(`ALTER TABLE agencies ADD COLUMN IF NOT EXISTS tab_config JSONB`);
+
+    // 10. Seed the system admin user (username: sysadmin / password: SysAdmin123!)
+    const saHash = await bcrypt.hash("SysAdmin123!", 12);
+    await client.query(`
+      INSERT INTO users (username, password_hash, name, global_role)
+      VALUES ('sysadmin', $1, 'System Administrator', 'sysadmin')
+      ON CONFLICT (username) DO UPDATE SET global_role='sysadmin'
+    `, [saHash]);
+
+    // 11. user_agencies junction table — one user can belong to many agencies
     //    with a distinct role and badge per agency
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_agencies (
@@ -101,7 +115,7 @@ async function migrate() {
       )
     `);
 
-    // 9. Seed user_agencies from existing users rows (idempotent)
+    // 12. Seed user_agencies from existing users rows (idempotent)
     await client.query(`
       INSERT INTO user_agencies (user_id, agency_id, role, badge)
       SELECT id,
@@ -164,6 +178,7 @@ function issueToken(user, agency, membership) {
       agency_nav:     agency.nav_color,
       agency_accent:  agency.accent_color,
       agency_stocks:  agency.stocks,
+      agency_tabs:    agency.tab_config || null,  // per-agency tab config for MainApp
     },
     process.env.JWT_SECRET,
     { expiresIn: "12h" }
@@ -185,6 +200,22 @@ function adminOnly(req, res, next) {
   if (req.user.role !== "admin")
     return res.status(403).json({ error: "Admin access required" });
   next();
+}
+
+function sysAdminOnly(req, res, next) {
+  if (req.user.global_role !== "sysadmin")
+    return res.status(403).json({ error: "System admin access required" });
+  next();
+}
+
+// Sysadmin JWT — no agency scope
+function issueSysAdminToken(user) {
+  return jwt.sign(
+    { id: user.id, email: user.email, username: user.username,
+      name: user.name, role: "sysadmin", global_role: "sysadmin" },
+    process.env.JWT_SECRET,
+    { expiresIn: "12h" }
+  );
 }
 
 // ─── Google OAuth ─────────────────────────────────────────────────────────────
@@ -302,6 +333,10 @@ app.post("/api/login", async (req, res) => {
     if (!user.password_hash) return res.status(401).json({ error: "This account uses Google Sign-In. Please use the Google button to log in." });
     if (!await bcrypt.compare(password, user.password_hash))
                              return res.status(401).json({ error: "Wrong password. Please try again." });
+
+    // System admin — no agency required
+    if (user.global_role === "sysadmin")
+      return res.json({ token: issueSysAdminToken(user), role: "sysadmin" });
 
     // Step 2 — check agency membership
     const { rows: [membership] } = await pool.query(
@@ -1056,6 +1091,121 @@ app.get("/api/export/annual", auth, adminOnly, async (req, res) => {
     res.setHeader("Content-Type","text/csv");
     res.setHeader("Content-Disposition",`attachment; filename="NarcTrack_Annual_${year}.csv"`);
     res.send(lines.join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── SYSTEM ADMIN ROUTES — require global_role = 'sysadmin' ──────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// All agencies with user counts and basic stats
+app.get("/api/sysadmin/agencies", auth, sysAdminOnly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT a.*,
+             COUNT(DISTINCT ua.user_id)::int AS user_count,
+             COUNT(DISTINCT CASE WHEN ua.role='admin' THEN ua.user_id END)::int AS admin_count
+      FROM   agencies a
+      LEFT JOIN user_agencies ua ON ua.agency_id = a.id
+      GROUP BY a.id
+      ORDER BY a.name
+    `);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Create a new agency
+app.post("/api/sysadmin/agencies", auth, sysAdminOnly, async (req, res) => {
+  try {
+    const { name, slug, primary_color, nav_color, accent_color, stocks } = req.body;
+    if (!name || !slug) return res.status(400).json({ error: "name and slug are required" });
+    const { rows: [ag] } = await pool.query(
+      `INSERT INTO agencies (name, slug, primary_color, nav_color, accent_color, stocks)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [name, slug.toLowerCase().replace(/\s+/g,"-"),
+       primary_color||"#3b82f6", nav_color||"#1e293b", accent_color||"#38bdf8",
+       JSON.stringify(stocks||["Main Stock","Sub-Stock 1","Sub-Stock 2"])]
+    );
+    res.status(201).json(ag);
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ error: "Agency name or slug already exists" });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update agency — colors, name, slug, stocks, tab_config
+app.patch("/api/sysadmin/agencies/:id", auth, sysAdminOnly, async (req, res) => {
+  try {
+    const { name, slug, primary_color, nav_color, accent_color, stocks, tab_config } = req.body;
+    const { rows: [ag] } = await pool.query(
+      `UPDATE agencies SET
+         name          = COALESCE($1, name),
+         slug          = COALESCE($2, slug),
+         primary_color = COALESCE($3, primary_color),
+         nav_color     = COALESCE($4, nav_color),
+         accent_color  = COALESCE($5, accent_color),
+         stocks        = COALESCE($6, stocks),
+         tab_config    = COALESCE($7, tab_config)
+       WHERE id = $8 RETURNING *`,
+      [name, slug ? slug.toLowerCase().replace(/\s+/g,"-") : null,
+       primary_color, nav_color, accent_color,
+       stocks ? JSON.stringify(stocks) : null,
+       tab_config ? JSON.stringify(tab_config) : null,
+       req.params.id]
+    );
+    if (!ag) return res.status(404).json({ error: "Agency not found" });
+    res.json(ag);
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ error: "Agency name or slug already exists" });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete an agency (only if empty — no users, no records)
+app.delete("/api/sysadmin/agencies/:id", auth, sysAdminOnly, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { rows: [cnt] } = await pool.query(
+      "SELECT COUNT(*)::int AS n FROM user_agencies WHERE agency_id=$1", [id]
+    );
+    if (cnt.n > 0) return res.status(400).json({ error: `Cannot delete — ${cnt.n} user(s) still assigned to this agency. Remove them first.` });
+    await pool.query("DELETE FROM agencies WHERE id=$1", [id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// All users globally with their agency memberships
+app.get("/api/sysadmin/users", auth, sysAdminOnly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT u.id, u.username, u.email, u.name, u.global_role, u.created_at,
+             COALESCE(json_agg(
+               json_build_object('agency_id', ua.agency_id, 'agency_name', a.name, 'role', ua.role, 'badge', ua.badge)
+             ) FILTER (WHERE ua.agency_id IS NOT NULL), '[]') AS memberships
+      FROM   users u
+      LEFT JOIN user_agencies ua ON ua.user_id = u.id
+      LEFT JOIN agencies      a  ON a.id = ua.agency_id
+      GROUP BY u.id
+      ORDER BY u.name
+    `);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Promote / demote sysadmin, or reset password
+app.patch("/api/sysadmin/users/:id", auth, sysAdminOnly, async (req, res) => {
+  try {
+    const { global_role, password } = req.body;
+    const updates = []; const params = [];
+    if (global_role !== undefined) { params.push(global_role || null); updates.push(`global_role=$${params.length}`); }
+    if (password) { params.push(await bcrypt.hash(password, 12)); updates.push(`password_hash=$${params.length}`); }
+    if (!updates.length) return res.json({ ok: true });
+    params.push(req.params.id);
+    const { rows: [u] } = await pool.query(
+      `UPDATE users SET ${updates.join(",")} WHERE id=$${params.length} RETURNING id,username,email,name,global_role`,
+      params
+    );
+    res.json(u);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
