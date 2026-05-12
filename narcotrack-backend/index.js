@@ -125,7 +125,18 @@ async function migrate() {
 migrate();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+// Allow requests from the configured frontend URL AND all Vercel preview deployments
+const allowedOrigin = (origin, callback) => {
+  if (!origin) return callback(null, true); // server-to-server / curl
+  const allowed = process.env.FRONTEND_URL || "";
+  if (
+    origin === allowed ||
+    origin.endsWith(".vercel.app") ||
+    origin.startsWith("http://localhost")
+  ) return callback(null, true);
+  callback(new Error(`CORS: origin ${origin} not allowed`));
+};
+app.use(cors({ origin: allowedOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 app.use(session({
   secret: process.env.SESSION_SECRET,
@@ -265,7 +276,8 @@ app.get("/api/auth/google/callback",
 );
 
 // ─── Public: list agencies (for login dropdown) ───────────────────────────────
-app.get("/api/agencies", async (req, res) => {
+// Fully open CORS — this is public info, no credentials involved
+app.get("/api/agencies", cors({ origin: "*" }), async (req, res) => {
   try {
     const { rows } = await pool.query(
       "SELECT id, name, slug, primary_color, nav_color, accent_color FROM agencies ORDER BY name"

@@ -154,12 +154,12 @@ function LoginPage({ onLogin }) {
   // Load agency list on mount
   useEffect(() => {
     fetch(`${API}/api/agencies`)
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(new Error(b.error || `HTTP ${r.status}`))))
       .then(list => {
         setAgencies(list);
         if (list.length === 1) setForm(p => ({ ...p, agency_id: list[0].id }));
       })
-      .catch(() => setErr("Could not load agency list — check your connection."))
+      .catch(ex => setErr(`Could not load agency list: ${ex.message}`))
       .finally(() => setAgLoad(false));
   }, []);
 
