@@ -144,10 +144,24 @@ function AuthCallback() {
 
 // ─── Login Page — /login ──────────────────────────────────────────────────────
 function LoginPage({ onLogin }) {
-  const [form, setForm] = useState({ username: "", password: "" });
-  const [err,  setErr ] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [form,     setForm    ] = useState({ username: "", password: "", agency_id: "" });
+  const [agencies, setAgencies] = useState([]);
+  const [agLoad,   setAgLoad  ] = useState(true);
+  const [err,      setErr     ] = useState("");
+  const [busy,     setBusy    ] = useState(false);
   const location = useLocation();
+
+  // Load agency list on mount
+  useEffect(() => {
+    fetch(`${API}/api/agencies`)
+      .then(r => r.json())
+      .then(list => {
+        setAgencies(list);
+        if (list.length === 1) setForm(p => ({ ...p, agency_id: list[0].id }));
+      })
+      .catch(() => setErr("Could not load agency list — check your connection."))
+      .finally(() => setAgLoad(false));
+  }, []);
 
   useEffect(() => {
     const msg = new URLSearchParams(location.search).get("msg");
@@ -158,14 +172,13 @@ function LoginPage({ onLogin }) {
 
   async function submit(e) {
     e.preventDefault();
+    if (!form.agency_id) { setErr("Please select your agency."); return; }
     setBusy(true); setErr("");
     try {
-      // Use raw fetch so a 401 "Invalid credentials" response shows the
-      // error message instead of being caught by the api() 401→redirect handler.
       const res  = await fetch(`${API}/api/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, agency_id: parseInt(form.agency_id) }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || "Login failed");
@@ -175,24 +188,56 @@ function LoginPage({ onLogin }) {
     finally { setBusy(false); }
   }
 
+  const googleHref = form.agency_id
+    ? `${API}/api/auth/google?agency_id=${form.agency_id}`
+    : `${API}/api/auth/google`;
+
   return (
     <div style={S.loginWrap}>
       <div style={S.loginCard}>
         <h1 style={S.loginTitle}>🚑 NarcTrack EMS</h1>
         <p style={S.loginSub}>NYS 10 NYCRR §80.136 Controlled Substance Management</p>
         {err && <div style={S.errBox}>{err}</div>}
+
+        {/* Agency selector */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 5, textTransform: "uppercase", letterSpacing: ".05em" }}>
+            Select Your Agency
+          </label>
+          {agLoad ? (
+            <div style={{ padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: 13, color: "#94a3b8" }}>
+              Loading agencies…
+            </div>
+          ) : (
+            <select
+              style={{ ...S.loginInput, marginBottom: 0, color: form.agency_id ? "#1e293b" : "#94a3b8", appearance: "none", backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%2394a3b8' d='M1 1l5 5 5-5'/%3E%3C/svg%3E\")", backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center" }}
+              value={form.agency_id}
+              onChange={f("agency_id")}
+              required
+            >
+              <option value="">— Choose an agency —</option>
+              {agencies.map(a => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
         <form onSubmit={submit}>
           <input style={S.loginInput} placeholder="Username or email"
             value={form.username} onChange={f("username")} required autoFocus />
           <input style={S.loginInput} type="password" placeholder="Password"
             value={form.password} onChange={f("password")} required />
-          <button style={S.loginBtn} type="submit" disabled={busy}>
+          <button style={S.loginBtn} type="submit" disabled={busy || agLoad}>
             {busy ? "Signing in…" : "Sign In"}
           </button>
         </form>
         <div style={S.divider}>— or —</div>
-        <a href={`${API}/api/auth/google`} style={S.googleBtn}>
-          {/* Google G logo */}
+        <a
+          href={googleHref}
+          style={{ ...S.googleBtn, opacity: form.agency_id ? 1 : 0.5, pointerEvents: form.agency_id ? "auto" : "none" }}
+          title={form.agency_id ? "" : "Select an agency first"}
+        >
           <svg width="18" height="18" viewBox="0 0 48 48">
             <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
             <path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
@@ -201,6 +246,11 @@ function LoginPage({ onLogin }) {
           </svg>
           Sign in with Google
         </a>
+        {!form.agency_id && !agLoad && agencies.length > 0 && (
+          <p style={{ textAlign: "center", fontSize: 11, color: "#94a3b8", marginTop: 8 }}>
+            Select an agency above to enable Google sign-in
+          </p>
+        )}
       </div>
     </div>
   );
