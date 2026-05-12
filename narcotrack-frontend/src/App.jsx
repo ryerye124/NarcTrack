@@ -10,7 +10,7 @@ import {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const API    = import.meta.env.VITE_API_URL || "http://localhost:3001";
-const STOCKS = ["Main Stock", "Sub-Stock 1", "Sub-Stock 2"];
+const STOCKS = ["Main Stock", "929", "9299"];
 const ROUTES_LIST = ["IV", "IM", "IN", "SubQ", "PO", "SL"];
 const MONTHS = [
   "January","February","March","April","May","June",
