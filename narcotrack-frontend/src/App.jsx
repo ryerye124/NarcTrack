@@ -656,12 +656,145 @@ function PendingTab() {
 }
 
 // ─── Administration Log Tab ───────────────────────────────────────────────────
+// ─── Inspect Modal — single record full detail + per-record DOH export ────────
+function InspectModal({ record, type, onClose }) {
+  if (!record) return null;
+
+  function Field({ label, value }) {
+    if (!value && value !== 0) return null;
+    return (
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 }}>{label}</div>
+        <div style={{ fontSize: 14, color: "#1e293b" }}>{value}</div>
+      </div>
+    );
+  }
+
+  const d = new Date(record.created_at);
+  const dateStr = d.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+
+  async function exportRecord() {
+    let path;
+    if (type === "admin")    path = `/api/export/doh3850/record/${record.id}`;
+    if (type === "purchase") path = `/api/export/doh3851/purchase/${record.id}`;
+    if (type === "transfer") path = `/api/export/doh3851/transfer/${record.id}`;
+    await downloadExport(path);
+  }
+
+  const exportLabel = type === "admin"
+    ? "⬇ Export as DOH-3850"
+    : "⬇ Export as DOH-3851";
+  const exportColor = type === "admin" ? "#0ea5e9" : "#7c3aed";
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999,
+                  display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+         onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 700,
+                    maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        {/* Header */}
+        <div style={{ padding: "18px 24px", borderBottom: "1px solid #e2e8f0",
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      background: type === "admin" ? "#f0f9ff" : type === "purchase" ? "#f5f3ff" : "#f0fdf4" }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: 1 }}>
+              {type === "admin" ? "Administration Record" : type === "purchase" ? "Purchase Record" : "Transfer Record"}
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#1e293b", marginTop: 2 }}>
+              {type === "admin"    ? `${record.drug} ${record.conc} — ${record.patient_name}` : null}
+              {type === "purchase" ? `${record.drug} ${record.conc} — ${record.supplier}` : null}
+              {type === "transfer" ? `${record.drug} ${record.conc} — ${record.from_stock} → ${record.to_stock}` : null}
+            </div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{dateStr} at {timeStr}</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22,
+                  cursor: "pointer", color: "#94a3b8", lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: "20px 24px" }}>
+          {type === "admin" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 24px" }}>
+              <Field label="Stock Location"    value={record.stock} />
+              <Field label="Run / Call ID"     value={record.run_id} />
+              <Field label="Drug"              value={`${record.drug} ${record.conc}`} />
+              <Field label="Dose Administered" value={record.dose} />
+              <Field label="Volume Withdrawn"  value={`${record.dose_qty} mL`} />
+              <Field label="Route"             value={record.route} />
+              <Field label="Patient Name"      value={record.patient_name} />
+              <Field label="Chief Complaint"   value={record.complaint} />
+              <Field label="Provider Name"     value={record.provider_name} />
+              <Field label="Provider #"        value={record.provider_num} />
+              <Field label="Ordering Physician"value={record.md_name} />
+              <Field label="MD Authorization"  value={record.md_sig} />
+              <Field label="Receiving Hospital"value={record.receiving_hospital} />
+              <Field label="Hospital Record #" value={record.hospital_record_num} />
+              <Field label="Witness"           value={record.witness} />
+              <Field label="Waste Amount"      value={record.waste_amt ? `${record.waste_amt} mL` : null} />
+              <Field label="Waste Witness"     value={record.waste_witness} />
+              <Field label="Waste Reason"      value={record.waste_reason} />
+              <div style={{ gridColumn: "1/-1", borderTop: "1px solid #f1f5f9", paddingTop: 10, marginTop: 4 }} />
+              <Field label="Submitted By"      value={record.logged_by} />
+              <Field label="Status"            value={record.status?.toUpperCase()} />
+              <Field label="Verified By"       value={record.verified_by} />
+              <Field label="Date Verified"     value={record.verified_at ? new Date(record.verified_at).toLocaleDateString("en-US") : null} />
+              <Field label="Verify Note"       value={record.verify_note} />
+            </div>
+          )}
+          {type === "purchase" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 24px" }}>
+              <Field label="Stock"          value={record.stock} />
+              <Field label="Drug"           value={`${record.drug} ${record.conc}`} />
+              <Field label="Quantity"       value={`${record.qty} ${record.unit}`} />
+              <Field label="Supplier"       value={record.supplier} />
+              <Field label="Supplier DEA #" value={record.supplier_dea} />
+              <Field label="Manufacturer"   value={record.manufacturer} />
+              <Field label="Lot #"          value={record.lot} />
+              <Field label="Received By"    value={record.received_by} />
+              <Field label="Logged By"      value={record.logged_by} />
+            </div>
+          )}
+          {type === "transfer" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 24px" }}>
+              <Field label="From Stock"      value={record.from_stock} />
+              <Field label="To Stock"        value={record.to_stock} />
+              <Field label="Drug"            value={`${record.drug} ${record.conc}`} />
+              <Field label="Quantity"        value={`${record.qty} ${record.unit}`} />
+              <Field label="Transferred By"  value={record.transferred_by} />
+              <Field label="Witness"         value={record.witness} />
+              <Field label="Logged By"       value={record.logged_by} />
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "14px 24px", borderTop: "1px solid #e2e8f0",
+                      display: "flex", gap: 10, justifyContent: "flex-end", background: "#f8fafc" }}>
+          <button onClick={onClose}
+            style={{ padding: "8px 18px", borderRadius: 6, border: "1px solid #cbd5e1",
+                     background: "#fff", color: "#475569", cursor: "pointer", fontSize: 13 }}>
+            Close
+          </button>
+          <button onClick={exportRecord}
+            style={{ padding: "8px 20px", borderRadius: 6, border: "none",
+                     background: exportColor, color: "#fff", cursor: "pointer",
+                     fontWeight: 700, fontSize: 13 }}>
+            {exportLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminLogTab({ user }) {
   const now = new Date();
-  const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [err,     setErr    ] = useState("");
-  const [filters, setFilters] = useState({ year: String(now.getFullYear()), month: String(now.getMonth()), stock: "", status: "" });
+  const [records,  setRecords ] = useState([]);
+  const [loading,  setLoading ] = useState(true);
+  const [err,      setErr     ] = useState("");
+  const [filters,  setFilters ] = useState({ year: String(now.getFullYear()), month: String(now.getMonth()), stock: "", status: "" });
+  const [inspectR, setInspectR] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -679,8 +812,11 @@ function AdminLogTab({ user }) {
 
   const ff = k => e => setFilters(p => ({ ...p, [k]: e.target.value }));
 
+  const rowHover = { cursor: "pointer" };
+
   return (
     <div style={S.page}>
+      <InspectModal record={inspectR} type="admin" onClose={() => setInspectR(null)} />
       <h2 style={S.h2}>Administration Log</h2>
       {err && <div style={S.errBox}>{err}</div>}
       <div style={S.filterRow}>
@@ -708,6 +844,7 @@ function AdminLogTab({ user }) {
         </label>
         <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }} onClick={load}>Refresh</button>
       </div>
+      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it and export as DOH-3850.</p>
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
@@ -719,7 +856,10 @@ function AdminLogTab({ user }) {
             <tbody>
               {records.length === 0 && <tr><td colSpan={11} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No records found.</td></tr>}
               {records.map(r => (
-                <tr key={r.id}>
+                <tr key={r.id} style={rowHover}
+                  onClick={() => setInspectR(r)}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f0f9ff"}
+                  onMouseLeave={e => e.currentTarget.style.background = ""}>
                   <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
                   <td style={S.td}>{r.drug} {r.conc}</td>
                   <td style={S.td}>{r.dose} ({r.dose_qty}mL)</td>
@@ -752,6 +892,7 @@ function PurchasesTab() {
   const [err,      setErr     ] = useState("");
   const [msg,      setMsg     ] = useState("");
   const [year,     setYear    ] = useState(String(now.getFullYear()));
+  const [inspectR, setInspectR] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -773,6 +914,7 @@ function PurchasesTab() {
 
   return (
     <div style={S.page}>
+      <InspectModal record={inspectR} type="purchase" onClose={() => setInspectR(null)} />
       <div style={{ ...S.row, justifyContent: "space-between" }}>
         <h2 style={S.h2}>Purchases</h2>
         <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ Log Purchase</button>
@@ -801,6 +943,7 @@ function PurchasesTab() {
           </form>
         </div>
       )}
+      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it and export as DOH-3851.</p>
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
@@ -808,7 +951,9 @@ function PurchasesTab() {
             <tbody>
               {records.length === 0 && <tr><td colSpan={11} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No purchases.</td></tr>}
               {records.map(r => (
-                <tr key={r.id}>
+                <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => setInspectR(r)}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f5f3ff"}
+                  onMouseLeave={e => e.currentTarget.style.background = ""}>
                   <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
                   <td style={S.td}>{r.stock}</td>
                   <td style={S.td}>{r.drug}</td>
@@ -851,6 +996,7 @@ function TransfersTab({ user }) {
   const [err,      setErr     ] = useState("");
   const [msg,      setMsg     ] = useState("");
   const [year,     setYear    ] = useState(String(now.getFullYear()));
+  const [inspectR, setInspectR] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -887,6 +1033,7 @@ function TransfersTab({ user }) {
 
   return (
     <div style={S.page}>
+      <InspectModal record={inspectR} type="transfer" onClose={() => setInspectR(null)} />
       <div style={{ ...S.row, justifyContent: "space-between" }}>
         <h2 style={S.h2}>Transfers</h2>
         <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ Log Transfer</button>
@@ -936,6 +1083,7 @@ function TransfersTab({ user }) {
           </form>
         </div>
       )}
+      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it and export as DOH-3851.</p>
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
@@ -943,7 +1091,9 @@ function TransfersTab({ user }) {
             <tbody>
               {records.length === 0 && <tr><td colSpan={9} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No transfers.</td></tr>}
               {records.map(r => (
-                <tr key={r.id}>
+                <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => setInspectR(r)}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f0fdf4"}
+                  onMouseLeave={e => e.currentTarget.style.background = ""}>
                   <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
                   <td style={S.td}>{r.from_stock}</td>
                   <td style={S.td}>{r.to_stock}</td>

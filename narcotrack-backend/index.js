@@ -1097,6 +1097,96 @@ app.get("/api/export/annual", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── Single-record exports ────────────────────────────────────────────────────
+
+// DOH-3850 for a single administration record
+app.get("/api/export/doh3850/record/:id", auth, adminOnly, async (req, res) => {
+  try {
+    const { rows: [r] } = await pool.query(
+      "SELECT * FROM administrations WHERE id=$1 AND agency_id=$2",
+      [req.params.id, req.user.agency_id]
+    );
+    if (!r) return res.status(404).json({ error: "Record not found" });
+    const headers = ["Date","Time","Stock Location","Drug Name","Concentration",
+      "Dose Administered","Quantity Withdrawn (mL)","Route","Run / Call ID",
+      "Patient Name","Chief Complaint","AEMT Provider #","Provider Name",
+      "Ordering Physician","MD Authorization","Receiving Hospital","Hospital Record #",
+      "Witness","Waste Amount","Waste Witness","Waste Reason","Submitted By","Verified By","Date Verified","Verify Note"];
+    const d = new Date(r.created_at);
+    const row = [
+      d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
+      r.stock, r.drug, r.conc, r.dose, r.dose_qty, r.route, r.run_id, r.patient_name, r.complaint,
+      r.provider_num, r.provider_name, r.md_name, r.md_sig, r.receiving_hospital, r.hospital_record_num,
+      r.witness, r.waste_amt||0, r.waste_witness||"", r.waste_reason||"",
+      r.logged_by, r.verified_by||"",
+      r.verified_at ? new Date(r.verified_at).toLocaleDateString("en-US") : "", r.verify_note||""
+    ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
+    res.setHeader("Content-Type","text/csv");
+    res.setHeader("Content-Disposition",`attachment; filename="DOH-3850_Record_${r.run_id||r.id}.csv"`);
+    res.send([headers.map(h=>`"${h}"`).join(","), row].join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DOH-3851 for a single purchase record
+app.get("/api/export/doh3851/purchase/:id", auth, adminOnly, async (req, res) => {
+  try {
+    const { rows: [r] } = await pool.query(
+      "SELECT * FROM purchases WHERE id=$1 AND agency_id=$2",
+      [req.params.id, req.user.agency_id]
+    );
+    if (!r) return res.status(404).json({ error: "Record not found" });
+    const { rows: inventory } = await pool.query(
+      "SELECT * FROM inventory WHERE agency_id=$1 ORDER BY stock,drug", [req.user.agency_id]
+    );
+    const headers = ["Record Type","Date","Time","Stock","Drug","Concentration","Qty","Unit",
+      "Supplier","DEA #","Manufacturer","Lot","Received/Transferred By","Witness","From Stock","To Stock","Logged By"];
+    const d = new Date(r.created_at);
+    const row = ["Purchase", d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
+      r.stock, r.drug, r.conc, r.qty, r.unit||"mL", r.supplier, r.supplier_dea,
+      r.manufacturer, r.lot, r.received_by, "", "", "", r.logged_by
+    ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
+    const csvRows = [headers.map(h=>`"${h}"`).join(","), row, `""`,
+      `"CURRENT INVENTORY — ${new Date().toLocaleDateString("en-US")}"`,
+      ["Stock","Drug","Conc","Qty","Unit","Manufacturer","Lot","Supplier","Supplier DEA"].map(h=>`"${h}"`).join(","),
+      ...inventory.map(i=>[i.stock,i.drug,i.conc,i.qty,i.unit,i.manufacturer,i.lot,i.supplier,i.supplier_dea]
+        .map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(","))
+    ];
+    res.setHeader("Content-Type","text/csv");
+    res.setHeader("Content-Disposition",`attachment; filename="DOH-3851_Purchase_${r.drug.replace(/\s+/g,"_")}_${r.id}.csv"`);
+    res.send(csvRows.join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DOH-3851 for a single transfer record
+app.get("/api/export/doh3851/transfer/:id", auth, adminOnly, async (req, res) => {
+  try {
+    const { rows: [r] } = await pool.query(
+      "SELECT * FROM transfers WHERE id=$1 AND agency_id=$2",
+      [req.params.id, req.user.agency_id]
+    );
+    if (!r) return res.status(404).json({ error: "Record not found" });
+    const { rows: inventory } = await pool.query(
+      "SELECT * FROM inventory WHERE agency_id=$1 ORDER BY stock,drug", [req.user.agency_id]
+    );
+    const headers = ["Record Type","Date","Time","Stock","Drug","Concentration","Qty","Unit",
+      "Supplier","DEA #","Manufacturer","Lot","Received/Transferred By","Witness","From Stock","To Stock","Logged By"];
+    const d = new Date(r.created_at);
+    const row = ["Transfer", d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
+      r.to_stock, r.drug, r.conc, r.qty, r.unit||"mL", r.from_stock, "",
+      "", "", r.transferred_by, r.witness||"", r.from_stock, r.to_stock, r.logged_by
+    ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
+    const csvRows = [headers.map(h=>`"${h}"`).join(","), row, `""`,
+      `"CURRENT INVENTORY — ${new Date().toLocaleDateString("en-US")}"`,
+      ["Stock","Drug","Conc","Qty","Unit","Manufacturer","Lot","Supplier","Supplier DEA"].map(h=>`"${h}"`).join(","),
+      ...inventory.map(i=>[i.stock,i.drug,i.conc,i.qty,i.unit,i.manufacturer,i.lot,i.supplier,i.supplier_dea]
+        .map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(","))
+    ];
+    res.setHeader("Content-Type","text/csv");
+    res.setHeader("Content-Disposition",`attachment; filename="DOH-3851_Transfer_${r.drug.replace(/\s+/g,"_")}_${r.id}.csv"`);
+    res.send(csvRows.join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── SYSTEM ADMIN ROUTES — require global_role = 'sysadmin' ──────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
