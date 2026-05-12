@@ -89,6 +89,30 @@ async function migrate() {
       EXCEPTION WHEN duplicate_table THEN NULL; END $$;
     `);
 
+    // 8. user_agencies junction table — one user can belong to many agencies
+    //    with a distinct role and badge per agency
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_agencies (
+        user_id   INTEGER NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+        agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+        role      VARCHAR(50) NOT NULL DEFAULT 'pending',
+        badge     VARCHAR(50) NOT NULL DEFAULT 'UNASSIGNED',
+        PRIMARY KEY (user_id, agency_id)
+      )
+    `);
+
+    // 9. Seed user_agencies from existing users rows (idempotent)
+    await client.query(`
+      INSERT INTO user_agencies (user_id, agency_id, role, badge)
+      SELECT id,
+             agency_id,
+             COALESCE(role,  'pending'),
+             COALESCE(badge, 'UNASSIGNED')
+      FROM   users
+      WHERE  agency_id IS NOT NULL
+      ON CONFLICT (user_id, agency_id) DO NOTHING
+    `);
+
     await client.query("COMMIT");
     console.log("Migration complete.");
   } catch (err) {
@@ -113,12 +137,15 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
-function issueToken(user, agency) {
+// membership = { role, badge } from user_agencies for this agency
+function issueToken(user, agency, membership) {
   return jwt.sign(
     {
       id: user.id, email: user.email,
       username: user.username || user.email,
-      role: user.role, name: user.name, badge: user.badge,
+      role:  membership.role,
+      badge: membership.badge,
+      name:  user.name,
       agency_id:      agency.id,
       agency_name:    agency.name,
       agency_slug:    agency.slug,
@@ -157,35 +184,52 @@ passport.use(new GoogleStrategy({
   passReqToCallback: true,
 }, async (req, accessToken, refreshToken, profile, done) => {
   try {
-    const email     = profile.emails[0].value;
-    const agencyId  = req.session.oauth_agency_id || 1;
+    const email    = profile.emails[0].value;
+    const agencyId = req.session.oauth_agency_id || 1;
 
-    // Find existing user in this agency
-    const { rows } = await pool.query(
-      "SELECT u.*, a.* FROM users u JOIN agencies a ON a.id=u.agency_id WHERE u.email=$1 AND u.agency_id=$2",
-      [email, agencyId]
+    // Find user globally by email (not scoped to agency)
+    let { rows: [user] } = await pool.query(
+      "SELECT * FROM users WHERE email=$1",
+      [email]
     );
 
-    if (rows[0]) return done(null, rows[0]);
+    // First-time Google sign-in — create global user record
+    if (!user) {
+      const { rows: [newUser] } = await pool.query(
+        `INSERT INTO users (email, name, google_id, username)
+         VALUES ($1,$2,$3,$1) RETURNING *`,
+        [email, profile.displayName, profile.id]
+      );
+      user = newUser;
+    }
 
-    // First-time Google user — create pending account for this agency
-    const { rows: [newUser] } = await pool.query(
-      `INSERT INTO users (email, name, google_id, role, badge, username, agency_id)
-       VALUES ($1,$2,$3,'pending','UNASSIGNED',$1,$4) RETURNING *`,
-      [email, profile.displayName, profile.id, agencyId]
+    // Ensure a user_agencies row exists for this agency (default: pending)
+    await pool.query(
+      `INSERT INTO user_agencies (user_id, agency_id, role, badge)
+       VALUES ($1,$2,'pending','UNASSIGNED')
+       ON CONFLICT (user_id, agency_id) DO NOTHING`,
+      [user.id, agencyId]
     );
-    // Attach agency info for token issuance
-    const { rows: [ag] } = await pool.query("SELECT * FROM agencies WHERE id=$1", [agencyId]);
-    newUser._agency = ag;
-    return done(null, newUser);
+
+    // Attach selected agency_id so the callback can fetch it
+    user._selected_agency_id = agencyId;
+    return done(null, user);
   } catch (err) { return done(err, null); }
 }));
 
-passport.serializeUser((user, done) => done(null, { id: user.id, agency_id: user.agency_id }));
+passport.serializeUser((user, done) =>
+  done(null, { id: user.id, agency_id: user._selected_agency_id || 1 })
+);
 passport.deserializeUser(async ({ id, agency_id }, done) => {
   const { rows } = await pool.query(
-    "SELECT u.*, a.id AS ag_id, a.name AS ag_name, a.slug, a.primary_color, a.nav_color, a.accent_color, a.stocks FROM users u JOIN agencies a ON a.id=u.agency_id WHERE u.id=$1",
-    [id]
+    `SELECT u.*, ua.role, ua.badge,
+            a.id AS ag_id, a.name AS ag_name, a.slug,
+            a.primary_color, a.nav_color, a.accent_color, a.stocks
+     FROM users u
+     JOIN user_agencies ua ON ua.user_id = u.id AND ua.agency_id = $2
+     JOIN agencies       a  ON a.id = $2
+     WHERE u.id = $1`,
+    [id, agency_id]
   );
   done(null, rows[0] || null);
 });
@@ -201,12 +245,21 @@ app.get("/api/auth/google/callback",
   passport.authenticate("google", { failureRedirect: `${process.env.FRONTEND_URL}/login?error=auth_failed` }),
   async (req, res) => {
     if (!req.user) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_user`);
-    if (req.user.role === "pending")
+
+    const agencyId = req.session.oauth_agency_id || 1;
+
+    // Fetch membership for selected agency
+    const { rows: [membership] } = await pool.query(
+      "SELECT role, badge FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
+      [req.user.id, agencyId]
+    );
+    if (!membership || membership.role === "pending")
       return res.redirect(`${process.env.FRONTEND_URL}/login?error=pending`);
-    // Fetch agency for token
-    const { rows: [ag] } = await pool.query("SELECT * FROM agencies WHERE id=$1", [req.user.agency_id]);
+
+    const { rows: [ag] } = await pool.query("SELECT * FROM agencies WHERE id=$1", [agencyId]);
     if (!ag) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_agency`);
-    const token = issueToken(req.user, ag);
+
+    const token = issueToken(req.user, ag, membership);
     res.redirect(`${process.env.FRONTEND_URL}/auth-callback?token=${token}`);
   }
 );
@@ -228,38 +281,51 @@ app.post("/api/login", async (req, res) => {
     if (!username || !password) return res.status(400).json({ error: "Missing credentials" });
     if (!agency_id)             return res.status(400).json({ error: "Agency selection required" });
 
-    const { rows } = await pool.query(
-      "SELECT u.*, a.id AS ag_id, a.name AS ag_name, a.slug, a.primary_color, a.nav_color, a.accent_color, a.stocks FROM users u JOIN agencies a ON a.id=u.agency_id WHERE (u.username=$1 OR u.email=$1) AND u.agency_id=$2",
-      [username.toLowerCase(), agency_id]
+    // Step 1 — find user globally (not scoped to an agency)
+    const { rows: [user] } = await pool.query(
+      "SELECT * FROM users WHERE username=$1 OR email=$1",
+      [username.toLowerCase()]
     );
-    if (!rows[0])               return res.status(401).json({ error: "No account found with that username or email." });
-    if (!rows[0].password_hash) return res.status(401).json({ error: "This account uses Google Sign-In. Please use the Google button to log in." });
-    if (!await bcrypt.compare(password, rows[0].password_hash))
-                                return res.status(401).json({ error: "Wrong password. Please try again." });
-    if (rows[0].role === "pending")
-                                return res.status(403).json({ error: "Account pending role assignment" });
+    if (!user)               return res.status(401).json({ error: "No account found with that username or email." });
+    if (!user.password_hash) return res.status(401).json({ error: "This account uses Google Sign-In. Please use the Google button to log in." });
+    if (!await bcrypt.compare(password, user.password_hash))
+                             return res.status(401).json({ error: "Wrong password. Please try again." });
 
-    const agency = {
-      id: rows[0].ag_id, name: rows[0].ag_name, slug: rows[0].slug,
-      primary_color: rows[0].primary_color, nav_color: rows[0].nav_color,
-      accent_color: rows[0].accent_color, stocks: rows[0].stocks,
-    };
-    res.json({ token: issueToken(rows[0], agency) });
+    // Step 2 — check agency membership
+    const { rows: [membership] } = await pool.query(
+      "SELECT role, badge FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
+      [user.id, agency_id]
+    );
+    if (!membership) return res.status(403).json({ error: "You don't have access to that agency. Contact an administrator." });
+    if (membership.role === "pending") return res.status(403).json({ error: "Your account is pending role assignment. Contact an administrator." });
+
+    // Step 3 — fetch agency branding
+    const { rows: [agency] } = await pool.query("SELECT * FROM agencies WHERE id=$1", [agency_id]);
+    if (!agency) return res.status(404).json({ error: "Agency not found" });
+
+    res.json({ token: issueToken(user, agency, membership) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Token refresh
 app.post("/api/auth/refresh", auth, async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      "SELECT u.*, a.* FROM users u JOIN agencies a ON a.id=u.agency_id WHERE u.id=$1",
-      [req.user.id]
+    const { rows: [row] } = await pool.query(
+      `SELECT u.*, ua.role AS ua_role, ua.badge AS ua_badge,
+              a.id AS ag_id, a.name AS ag_name, a.slug,
+              a.primary_color, a.nav_color, a.accent_color, a.stocks
+       FROM users u
+       JOIN user_agencies ua ON ua.user_id = u.id AND ua.agency_id = $2
+       JOIN agencies       a  ON a.id = $2
+       WHERE u.id = $1`,
+      [req.user.id, req.user.agency_id]
     );
-    if (!rows[0]) return res.status(404).json({ error: "User not found" });
-    const ag = { id: rows[0].id, name: rows[0].name, slug: rows[0].slug,
-                 primary_color: rows[0].primary_color, nav_color: rows[0].nav_color,
-                 accent_color: rows[0].accent_color, stocks: rows[0].stocks };
-    res.json({ token: issueToken(rows[0], ag) });
+    if (!row) return res.status(404).json({ error: "User or membership not found" });
+    const agency     = { id: row.ag_id, name: row.ag_name, slug: row.slug,
+                         primary_color: row.primary_color, nav_color: row.nav_color,
+                         accent_color: row.accent_color, stocks: row.stocks };
+    const membership = { role: row.ua_role, badge: row.ua_badge };
+    res.json({ token: issueToken(row, agency, membership) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -292,14 +358,17 @@ app.patch("/api/agency", auth, adminOnly, async (req, res) => {
 // ─── USERS ────────────────────────────────────────────────────────────────────
 app.get("/api/users/me", auth, async (req, res) => {
   try {
-    const { rows } = await pool.query(
-      `SELECT id, username, email, name, badge, role, avatar,
-              (password_hash IS NOT NULL) AS has_password
-       FROM users WHERE id=$1 AND agency_id=$2`,
+    const { rows: [row] } = await pool.query(
+      `SELECT u.id, u.username, u.email, u.name, u.avatar,
+              ua.role, ua.badge,
+              (u.password_hash IS NOT NULL) AS has_password
+       FROM users u
+       JOIN user_agencies ua ON ua.user_id = u.id AND ua.agency_id = $2
+       WHERE u.id = $1`,
       [req.user.id, req.user.agency_id]
     );
-    if (!rows[0]) return res.status(404).json({ error: "User not found" });
-    res.json(rows[0]);
+    if (!row) return res.status(404).json({ error: "User not found" });
+    res.json(row);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -332,58 +401,147 @@ app.patch("/api/users/me", auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// List all users in this agency (joined from user_agencies)
 app.get("/api/users", auth, adminOnly, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT id,username,email,name,badge,role,avatar,created_at FROM users WHERE agency_id=$1 ORDER BY name",
+      `SELECT u.id, u.username, u.email, u.name, u.avatar, u.created_at,
+              ua.role, ua.badge
+       FROM users u
+       JOIN user_agencies ua ON ua.user_id = u.id AND ua.agency_id = $1
+       ORDER BY u.name`,
       [req.user.agency_id]
     );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post("/api/users", auth, adminOnly, async (req, res) => {
+// Look up an existing user globally by email (for adding them to this agency)
+app.get("/api/users/lookup", auth, adminOnly, async (req, res) => {
   try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: "email required" });
+    const { rows: [user] } = await pool.query(
+      "SELECT id, username, email, name FROM users WHERE email=$1",
+      [email.toLowerCase()]
+    );
+    if (!user) return res.status(404).json({ error: "No NarcTrack account with that email." });
+    // Check if already in this agency
+    const { rows: [existing] } = await pool.query(
+      "SELECT role FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
+      [user.id, req.user.agency_id]
+    );
+    res.json({ ...user, already_member: !!existing, existing_role: existing?.role });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Create a brand-new user and add them to this agency
+app.post("/api/users", auth, adminOnly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
     const { username, password, name, badge, role, email } = req.body;
     const hash = password ? await bcrypt.hash(password, 12) : null;
-    const { rows } = await pool.query(
-      `INSERT INTO users (username,email,password_hash,name,badge,role,agency_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id,username,email,name,badge,role`,
-      [username?.toLowerCase(), email?.toLowerCase()||null, hash, name, badge, role||"user", req.user.agency_id]
+
+    // Create the global user record
+    const { rows: [user] } = await client.query(
+      `INSERT INTO users (username, email, password_hash, name)
+       VALUES ($1,$2,$3,$4) RETURNING id,username,email,name`,
+      [username?.toLowerCase(), email?.toLowerCase()||null, hash, name]
     );
-    res.status(201).json(rows[0]);
+
+    // Add to this agency with the specified role/badge
+    await client.query(
+      `INSERT INTO user_agencies (user_id, agency_id, role, badge)
+       VALUES ($1,$2,$3,$4)`,
+      [user.id, req.user.agency_id, role||"user", badge||"UNASSIGNED"]
+    );
+
+    await client.query("COMMIT");
+    res.status(201).json({ ...user, role: role||"user", badge: badge||"UNASSIGNED" });
   } catch (err) {
+    await client.query("ROLLBACK");
     if (err.code === "23505") return res.status(409).json({ error: "Username or email already exists" });
     res.status(500).json({ error: err.message });
-  }
+  } finally { client.release(); }
 });
 
-app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
+// Add an existing (globally known) user to this agency
+app.post("/api/users/add-existing", auth, adminOnly, async (req, res) => {
   try {
-    const { role, badge, name, username, email } = req.body;
-    const { rows } = await pool.query(
-      `UPDATE users SET
-         role=COALESCE($1,role), badge=COALESCE($2,badge), name=COALESCE($3,name),
-         username=COALESCE($4,username), email=COALESCE($5,email)
-       WHERE id=$6 AND agency_id=$7 RETURNING id,username,email,name,badge,role`,
-      [role, badge, name,
-       username ? username.toLowerCase() : null,
-       email    ? email.toLowerCase()    : null,
-       req.params.id, req.user.agency_id]
+    const { user_id, role, badge } = req.body;
+    if (!user_id) return res.status(400).json({ error: "user_id required" });
+    const { rows: [user] } = await pool.query(
+      "SELECT id, username, email, name FROM users WHERE id=$1", [user_id]
     );
-    if (!rows[0]) return res.status(404).json({ error: "User not found" });
-    res.json(rows[0]);
-  } catch (err) {
-    if (err.code === "23505") return res.status(409).json({ error: "Username or email already exists" });
-    res.status(500).json({ error: err.message });
-  }
+    if (!user) return res.status(404).json({ error: "User not found" });
+    await pool.query(
+      `INSERT INTO user_agencies (user_id, agency_id, role, badge)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (user_id, agency_id) DO UPDATE SET role=$3, badge=$4`,
+      [user_id, req.user.agency_id, role||"user", badge||"UNASSIGNED"]
+    );
+    res.json({ ...user, role: role||"user", badge: badge||"UNASSIGNED" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Update a user's agency-specific fields (role, badge) and/or global fields (name, username, email)
+app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const uid = req.params.id;
+    const { role, badge, name, username, email } = req.body;
+
+    // Update agency membership fields
+    if (role !== undefined || badge !== undefined) {
+      const { rows: [ua] } = await client.query(
+        `UPDATE user_agencies
+         SET role  = COALESCE($1, role),
+             badge = COALESCE($2, badge)
+         WHERE user_id=$3 AND agency_id=$4
+         RETURNING role, badge`,
+        [role, badge, uid, req.user.agency_id]
+      );
+      if (!ua) { await client.query("ROLLBACK"); return res.status(404).json({ error: "User not in this agency" }); }
+    }
+
+    // Update global user identity fields
+    const userUpdates = []; const uParams = [];
+    if (name)     { uParams.push(name);                 userUpdates.push(`name=$${uParams.length}`); }
+    if (username) { uParams.push(username.toLowerCase()); userUpdates.push(`username=$${uParams.length}`); }
+    if (email)    { uParams.push(email.toLowerCase());    userUpdates.push(`email=$${uParams.length}`); }
+    if (userUpdates.length) {
+      uParams.push(uid);
+      await client.query(`UPDATE users SET ${userUpdates.join(",")} WHERE id=$${uParams.length}`, uParams);
+    }
+
+    await client.query("COMMIT");
+
+    // Return merged result
+    const { rows: [merged] } = await pool.query(
+      `SELECT u.id, u.username, u.email, u.name, u.avatar, ua.role, ua.badge
+       FROM users u JOIN user_agencies ua ON ua.user_id=u.id AND ua.agency_id=$2
+       WHERE u.id=$1`,
+      [uid, req.user.agency_id]
+    );
+    res.json(merged);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.code === "23505") return res.status(409).json({ error: "Username or email already exists" });
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
+});
+
+// Remove a user from this agency (does not delete the global user account)
 app.delete("/api/users/:id", auth, adminOnly, async (req, res) => {
   try {
     if (parseInt(req.params.id) === req.user.id)
-      return res.status(400).json({ error: "Cannot delete your own account" });
-    await pool.query("DELETE FROM users WHERE id=$1 AND agency_id=$2", [req.params.id, req.user.agency_id]);
+      return res.status(400).json({ error: "Cannot remove yourself from the agency" });
+    await pool.query(
+      "DELETE FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
+      [req.params.id, req.user.agency_id]
+    );
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

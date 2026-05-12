@@ -1370,15 +1370,20 @@ function MonthlyLogsTab({ user }) {
 
 // ─── Users Tab (admin) ────────────────────────────────────────────────────────
 function UsersTab({ currentUser }) {
-  const blank = () => ({ username: "", email: "", password: "", name: "", badge: "", role: "user" });
-  const [users,    setUsers   ] = useState([]);
-  const [loading,  setLoading ] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [form,     setForm    ] = useState(blank());
-  const [editId,   setEditId  ] = useState(null);
-  const [editData, setEditData] = useState({});
-  const [err,      setErr     ] = useState("");
-  const [msg,      setMsg     ] = useState("");
+  const blankNew  = () => ({ username: "", email: "", password: "", name: "", badge: "", role: "user" });
+  const blankLink = () => ({ email: "", badge: "", role: "user" });
+
+  const [users,     setUsers    ] = useState([]);
+  const [loading,   setLoading  ] = useState(true);
+  const [panel,     setPanel    ] = useState(null); // null | "new" | "existing"
+  const [formNew,   setFormNew  ] = useState(blankNew());
+  const [formLink,  setFormLink ] = useState(blankLink());
+  const [linkFound, setLinkFound] = useState(null); // user record returned by lookup
+  const [linkBusy,  setLinkBusy ] = useState(false);
+  const [editId,    setEditId   ] = useState(null);
+  const [editData,  setEditData ] = useState({});
+  const [err,       setErr      ] = useState("");
+  const [msg,       setMsg      ] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1388,13 +1393,39 @@ function UsersTab({ currentUser }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const fn = k => e => setFormNew(p  => ({ ...p, [k]: e.target.value }));
+  const fl = k => e => setFormLink(p => ({ ...p, [k]: e.target.value }));
 
-  async function addUser(e) {
-    e.preventDefault();
+  // ── Create brand-new user ──
+  async function addNewUser(e) {
+    e.preventDefault(); setErr("");
     try {
-      await api("/api/users", { method: "POST", body: JSON.stringify(form) });
-      setMsg("User created."); setShowForm(false); setForm(blank()); load();
+      await api("/api/users", { method: "POST", body: JSON.stringify(formNew) });
+      setMsg("User created and added to this agency."); setPanel(null); setFormNew(blankNew()); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  // ── Look up existing user by email ──
+  async function lookupUser(e) {
+    e.preventDefault(); setErr(""); setLinkFound(null); setLinkBusy(true);
+    try {
+      const found = await api(`/api/users/lookup?email=${encodeURIComponent(formLink.email)}`);
+      setLinkFound(found);
+      if (found.already_member) setMsg(`${found.name} is already in this agency (${found.existing_role}). You can update their role/badge below.`);
+    } catch (ex) { setErr(ex.message); }
+    finally { setLinkBusy(false); }
+  }
+
+  // ── Add / update existing user in this agency ──
+  async function addExistingUser(e) {
+    e.preventDefault(); setErr("");
+    try {
+      await api("/api/users/add-existing", {
+        method: "POST",
+        body: JSON.stringify({ user_id: linkFound.id, role: formLink.role, badge: formLink.badge }),
+      });
+      setMsg(`${linkFound.name} added to this agency as ${formLink.role}.`);
+      setPanel(null); setFormLink(blankLink()); setLinkFound(null); load();
     } catch (ex) { setErr(ex.message); }
   }
 
@@ -1405,47 +1436,108 @@ function UsersTab({ currentUser }) {
     } catch (ex) { setErr(ex.message); }
   }
 
-  async function deleteUser(id) {
-    if (!window.confirm("Delete this user? This cannot be undone.")) return;
+  async function removeUser(id, name) {
+    if (!window.confirm(`Remove ${name} from this agency? Their account will still exist for other agencies.`)) return;
     try {
       await api(`/api/users/${id}`, { method: "DELETE" });
-      setMsg("User deleted."); load();
+      setMsg(`${name} removed from this agency.`); load();
     } catch (ex) { setErr(ex.message); }
   }
 
   return (
     <div style={S.page}>
-      <div style={{ ...S.row, justifyContent: "space-between" }}>
+      <div style={{ ...S.row, justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <h2 style={S.h2}>User Management</h2>
-        <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ Add User</button>
+        <span style={{ display: "flex", gap: 8 }}>
+          <button style={S.btnPrimary} onClick={() => setPanel(p => p === "new" ? null : "new")}>+ Create New User</button>
+          <button style={{ ...S.btnPrimary, background: "#7c3aed" }} onClick={() => setPanel(p => p === "existing" ? null : "existing")}>+ Add Existing User</button>
+        </span>
       </div>
       {err && <div style={S.errBox}>{err}</div>}
       {msg && <div style={S.okBox}>{msg}</div>}
-      {showForm && (
+
+      {/* ── Create new user panel ── */}
+      {panel === "new" && (
         <div style={S.card}>
-          <h3 style={S.h3}>Add User</h3>
-          <form onSubmit={addUser} style={S.form3}>
-            <label style={S.label}>Username<input style={S.input} value={form.username} onChange={f("username")} required /></label>
-            <label style={S.label}>Email<input style={S.input} type="email" value={form.email} onChange={f("email")} /></label>
-            <label style={S.label}>Password (blank = Google only)<input style={S.input} type="password" value={form.password} onChange={f("password")} /></label>
-            <label style={S.label}>Full Name<input style={S.input} value={form.name} onChange={f("name")} required /></label>
-            <label style={S.label}>Badge #<input style={S.input} value={form.badge} onChange={f("badge")} required /></label>
+          <h3 style={S.h3}>Create New User</h3>
+          <p style={{ fontSize: 12, color: "#64748b", margin: "0 0 12px" }}>
+            Creates a brand-new NarcTrack account and adds it to this agency.
+          </p>
+          <form onSubmit={addNewUser} style={S.form3}>
+            <label style={S.label}>Username<input style={S.input} value={formNew.username} onChange={fn("username")} required /></label>
+            <label style={S.label}>Email<input style={S.input} type="email" value={formNew.email} onChange={fn("email")} /></label>
+            <label style={S.label}>Password<span style={{ fontSize: 11, color: "#94a3b8" }}>(blank = Google sign-in only)</span><input style={S.input} type="password" value={formNew.password} onChange={fn("password")} /></label>
+            <label style={S.label}>Full Name<input style={S.input} value={formNew.name} onChange={fn("name")} required /></label>
+            <label style={S.label}>Badge #<input style={S.input} value={formNew.badge} onChange={fn("badge")} required /></label>
             <label style={S.label}>Role
-              <select style={S.select} value={form.role} onChange={f("role")}>
+              <select style={S.select} value={formNew.role} onChange={fn("role")}>
                 <option value="user">User</option>
                 <option value="admin">Admin</option>
                 <option value="pending">Pending</option>
               </select>
             </label>
-            <div style={{ gridColumn: "1/-1" }}><button style={S.btnPrimary} type="submit">Create User</button></div>
+            <div style={{ gridColumn: "1/-1", display: "flex", gap: 8 }}>
+              <button style={S.btnPrimary} type="submit">Create User</button>
+              <button style={{ ...S.btn, background: "#e2e8f0", color: "#475569" }} type="button" onClick={() => setPanel(null)}>Cancel</button>
+            </div>
           </form>
         </div>
       )}
+
+      {/* ── Add existing user panel ── */}
+      {panel === "existing" && (
+        <div style={S.card}>
+          <h3 style={S.h3}>Add Existing User to This Agency</h3>
+          <p style={{ fontSize: 12, color: "#64748b", margin: "0 0 12px" }}>
+            Look up a user who already has a NarcTrack account (at another agency) and grant them access here with their own role and badge number.
+          </p>
+          {/* Email lookup */}
+          <form onSubmit={lookupUser} style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "flex-end" }}>
+            <label style={{ ...S.label, flex: 1 }}>
+              User's Email Address
+              <input style={S.input} type="email" value={formLink.email} onChange={fl("email")} required placeholder="their@email.com" />
+            </label>
+            <button style={S.btnPrimary} type="submit" disabled={linkBusy}>{linkBusy ? "Searching…" : "Look Up"}</button>
+            <button style={{ ...S.btn, background: "#e2e8f0", color: "#475569" }} type="button" onClick={() => { setPanel(null); setLinkFound(null); setFormLink(blankLink()); }}>Cancel</button>
+          </form>
+          {/* Result */}
+          {linkFound && (
+            <form onSubmit={addExistingUser}>
+              <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 6, padding: "10px 14px", marginBottom: 12, fontSize: 13 }}>
+                ✅ Found: <strong>{linkFound.name}</strong> ({linkFound.email})
+                {linkFound.already_member && <span style={{ marginLeft: 8, color: "#d97706" }}>· Already a member — saving will update their role/badge</span>}
+              </div>
+              <div style={S.form3}>
+                <label style={S.label}>Badge # for This Agency<input style={S.input} value={formLink.badge} onChange={fl("badge")} required /></label>
+                <label style={S.label}>Role for This Agency
+                  <select style={S.select} value={formLink.role} onChange={fl("role")}>
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                    <option value="pending">Pending</option>
+                  </select>
+                </label>
+                <div style={{ gridColumn: "1/-1" }}>
+                  <button style={{ ...S.btnPrimary, background: "#7c3aed" }} type="submit">
+                    {linkFound.already_member ? "Update Role / Badge" : "Add to This Agency"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+
+      {/* ── User table ── */}
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
-            <thead><tr>{["","Name","Username","Email","Badge","Role","Actions"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead>
+              <tr>{["", "Name", "Username", "Email", "Badge", "Role", "Actions"].map(h => <th key={h} style={S.th}>{h}</th>)}</tr>
+            </thead>
             <tbody>
+              {users.length === 0 && (
+                <tr><td colSpan={7} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No users in this agency yet.</td></tr>
+              )}
               {users.map(u => {
                 const initials = (u.name || "?").split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
                 return (
@@ -1495,7 +1587,7 @@ function UsersTab({ currentUser }) {
                         <span style={{ display: "flex", gap: 4 }}>
                           <button style={S.btnGray} onClick={() => { setEditId(u.id); setEditData({}); }}>Edit</button>
                           {u.id !== currentUser.id && (
-                            <button style={S.btnDanger} onClick={() => deleteUser(u.id)}>Delete</button>
+                            <button style={S.btnDanger} onClick={() => removeUser(u.id, u.name)}>Remove</button>
                           )}
                         </span>
                       )}
@@ -1505,6 +1597,9 @@ function UsersTab({ currentUser }) {
               })}
             </tbody>
           </table>
+          <p style={{ fontSize: 11, color: "#94a3b8", margin: "12px 0 0" }}>
+            "Remove" removes the user from <em>this agency only</em> — their account remains active at any other agencies they belong to.
+          </p>
         </div>
       )}
     </div>
