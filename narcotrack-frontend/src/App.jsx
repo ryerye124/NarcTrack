@@ -726,8 +726,17 @@ function PurchasesTab() {
 
 // ─── Transfers Tab ────────────────────────────────────────────────────────────
 function TransfersTab({ user }) {
-  const now  = new Date();
-  const blank = () => ({ fromStock: "Main Stock", toStock: "929", drug: "", conc: "", unit: "", qty: "", transferredBy: user.name || "", witness: "" });
+  const now = new Date();
+  // BUG-006 fix: availStocks defined BEFORE blank() so blank() can reference it safely
+  // BUG-001 fix: role-aware defaults — non-admin never gets "Main Stock" as fromStock
+  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const blank = () => ({
+    fromStock:    availStocks[0],
+    toStock:      availStocks[1] ?? availStocks[0],
+    drug: "", conc: "", unit: "", qty: "",
+    transferredBy: user.name || "", witness: "",
+  });
+
   const [records,  setRecords ] = useState([]);
   const [loading,  setLoading ] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -748,8 +757,19 @@ function TransfersTab({ user }) {
   useEffect(() => { load(); }, [load]);
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
-  const fromDrugs   = inv[form.fromStock] || [];
+  const fromDrugs = inv[form.fromStock] || [];
+
+  // BUG-002 + BUG-003 fix: clear drug/conc/unit AND correct toStock when fromStock changes
+  function onFromStockChange(e) {
+    const newFrom = e.target.value;
+    const validTo = availStocks.find(s => s !== newFrom) ?? availStocks[0];
+    setForm(p => ({
+      ...p,
+      fromStock: newFrom,
+      toStock:   p.toStock === newFrom ? validTo : p.toStock,
+      drug: "", conc: "", unit: "",
+    }));
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -775,8 +795,9 @@ function TransfersTab({ user }) {
         <div style={S.card}>
           <h3 style={S.h3}>Log Transfer</h3>
           <form onSubmit={submit} style={S.form3}>
+            {/* BUG-001/002/003 fix: use onFromStockChange instead of f("fromStock") */}
             <label style={S.label}>From Stock
-              <select style={S.select} value={form.fromStock} onChange={f("fromStock")} required>
+              <select style={S.select} value={form.fromStock} onChange={onFromStockChange} required>
                 {availStocks.map(s => <option key={s}>{s}</option>)}
               </select>
             </label>
@@ -794,7 +815,7 @@ function TransfersTab({ user }) {
                   <option value="">Select…</option>
                   {fromDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug} ({d.qty} {d.unit} avail.)</option>)}
                 </select>
-              ) : <input style={S.input} value={form.drug} onChange={f("drug")} required />}
+              ) : <input style={S.input} value={form.drug} onChange={f("drug")} placeholder="No drugs in this stock" required />}
             </label>
             <label style={S.label}>Concentration
               <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value={form.conc} readOnly placeholder="Auto-filled when drug selected" />
@@ -887,7 +908,12 @@ function WasteTab({ user }) {
         <div style={S.card}>
           <h3 style={S.h3}>Log Waste / Destruction</h3>
           <form onSubmit={submit} style={S.form3}>
-            <label style={S.label}>Stock<select style={S.select} value={form.stock} onChange={f("stock")} required>{availStocks.map(s=><option key={s}>{s}</option>)}</select></label>
+            {/* BUG-005 fix: stock onChange clears drug/conc/unit to prevent stale values */}
+            <label style={S.label}>Stock
+              <select style={S.select} value={form.stock} onChange={e => setForm(p => ({ ...p, stock: e.target.value, drug: "", conc: "", unit: "" }))} required>
+                {availStocks.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </label>
             <label style={S.label}>Drug
               {stockDrugs.length > 0 ? (
                 <select style={S.select} value={form.drug} onChange={e => {
@@ -952,7 +978,9 @@ function AuditsTab({ user }) {
   const [loading,  setLoading ] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [inv,      setInv     ] = useState({});
-  const [stock,    setStock   ] = useState(user.role === "admin" ? "Main Stock" : "Sub-Stock 1");
+  // BUG-004 fix: "Sub-Stock 1" was renamed to "929"; use role-aware default
+  const auditAvailStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const [stock,    setStock   ] = useState(user.role === "admin" ? "Main Stock" : auditAvailStocks[0]);
   const [auditor,  setAuditor ] = useState(user.name || "");
   const [witness,  setWitness ] = useState("");
   const [notes,    setNotes   ] = useState("");
@@ -971,7 +999,6 @@ function AuditsTab({ user }) {
   }, [year]);
   useEffect(() => { load(); }, [load]);
 
-  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
   const stockDrugs  = inv[stock] || [];
 
   async function submit(e) {
@@ -1003,7 +1030,7 @@ function AuditsTab({ user }) {
         <div style={S.card}>
           <h3 style={S.h3}>Shift Count Audit</h3>
           <div style={{ ...S.form3, marginBottom: 14 }}>
-            <label style={S.label}>Stock<select style={S.select} value={stock} onChange={e => setStock(e.target.value)}>{availStocks.map(s=><option key={s}>{s}</option>)}</select></label>
+            <label style={S.label}>Stock<select style={S.select} value={stock} onChange={e => setStock(e.target.value)}>{auditAvailStocks.map(s=><option key={s}>{s}</option>)}</select></label>
             <label style={S.label}>Auditor<input style={S.input} value={auditor} onChange={e => setAuditor(e.target.value)} required /></label>
             <label style={S.label}>Witness<input style={S.input} value={witness} onChange={e => setWitness(e.target.value)} required /></label>
           </div>
@@ -1129,7 +1156,8 @@ function MonthlyLogsTab({ user }) {
     } catch (ex) { setErr(ex.message); }
   }
 
-  async function doExport(type, color) {
+  // BUG-007 fix: removed unused `color` parameter
+  async function doExport(type) {
     setExporting(type); setErr("");
     try { await downloadExport(`/api/export/${type}?year=${selYear}&month=${selMonth}`); }
     catch (ex) { setErr(ex.message); }
