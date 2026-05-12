@@ -160,9 +160,17 @@ function LoginPage({ onLogin }) {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      const data = await api("/api/login", { method: "POST", body: JSON.stringify(form) });
-      saveToken(data.token);
-      onLogin(decodeJwt(data.token));
+      // Use raw fetch so a 401 "Invalid credentials" response shows the
+      // error message instead of being caught by the api() 401→redirect handler.
+      const res  = await fetch(`${API}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Login failed");
+      saveToken(body.token);
+      onLogin(decodeJwt(body.token));
     } catch (ex) { setErr(ex.message); }
     finally { setBusy(false); }
   }
