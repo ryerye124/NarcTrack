@@ -2436,9 +2436,12 @@ function SysAdminUsers() {
   const [msg,      setMsg     ] = useState("");
   const [filter,   setFilter  ] = useState("");
   // expanded user id for the add-to-agency panel
-  const [expanded, setExpanded] = useState(null);
+  const [expanded,  setExpanded ] = useState(null);
   // per-expanded-user form state
-  const [addForm,  setAddForm ] = useState({ agency_id: "", role: "user", badge: "" });
+  const [addForm,   setAddForm  ] = useState({ agency_id: "", role: "user", badge: "" });
+  // password reset form (keyed by user id)
+  const [resetPwId, setResetPwId] = useState(null);
+  const [resetPw,   setResetPw  ] = useState({ pw: "", pw2: "" });
 
   useEffect(() => {
     Promise.all([
@@ -2451,9 +2454,22 @@ function SysAdminUsers() {
   }, []);
 
   function openExpand(userId) {
-    if (expanded === userId) { setExpanded(null); return; }
+    if (expanded === userId) { setExpanded(null); setResetPwId(null); return; }
     setExpanded(userId);
     setAddForm({ agency_id: "", role: "user", badge: "" });
+    setResetPwId(null);
+    setResetPw({ pw: "", pw2: "" });
+  }
+
+  async function sysResetPassword(u, e) {
+    e.preventDefault(); setErr("");
+    if (resetPw.pw.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (resetPw.pw !== resetPw.pw2) { setErr("Passwords do not match."); return; }
+    try {
+      await api(`/api/sysadmin/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ password: resetPw.pw }) });
+      setMsg(`Password reset for ${u.name}.`);
+      setResetPwId(null); setResetPw({ pw: "", pw2: "" });
+    } catch (ex) { setErr(ex.message); }
   }
 
   async function toggleSysAdmin(u) {
@@ -2612,6 +2628,40 @@ function SysAdminUsers() {
                       <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }}
                         onClick={() => addToAgency(u)}>Add to Agency</button>
                     </div>
+                  </div>
+
+                  {/* Password reset */}
+                  <div style={{ marginTop: 12 }}>
+                    <button style={{ ...S.btnGray, background: "#f59e0b", color: "#fff" }}
+                      onClick={() => { setResetPwId(resetPwId === u.id ? null : u.id); setResetPw({ pw: "", pw2: "" }); }}>
+                      🔑 {resetPwId === u.id ? "Cancel Password Reset" : "Reset Password"}
+                    </button>
+                    {resetPwId === u.id && (
+                      <form onSubmit={e => sysResetPassword(u, e)}
+                        style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end",
+                                 marginTop: 10, padding: "12px 14px", background: "#fffbeb",
+                                 border: "1px solid #fde68a", borderRadius: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#92400e", width: "100%" }}>
+                          Set new password for <strong>{u.name || u.username}</strong>
+                        </div>
+                        <label style={{ ...S.label, margin: 0 }}>
+                          <span style={{ fontSize: 11 }}>New Password</span>
+                          <input style={{ ...S.input, width: 180 }} type="password" required minLength={6}
+                            placeholder="min 6 characters"
+                            value={resetPw.pw} onChange={e => setResetPw(p => ({ ...p, pw: e.target.value }))} />
+                        </label>
+                        <label style={{ ...S.label, margin: 0 }}>
+                          <span style={{ fontSize: 11 }}>Confirm Password</span>
+                          <input style={{ ...S.input, width: 180 }} type="password" required
+                            placeholder="repeat password"
+                            value={resetPw.pw2} onChange={e => setResetPw(p => ({ ...p, pw2: e.target.value }))} />
+                        </label>
+                        <button type="submit"
+                          style={{ ...S.btnPrimary, background: "#f59e0b", alignSelf: "flex-end" }}>
+                          Set Password
+                        </button>
+                      </form>
+                    )}
                   </div>
 
                   {/* Sysadmin toggle */}
