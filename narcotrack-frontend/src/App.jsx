@@ -1,0 +1,1358 @@
+// NarcTrack EMS — Frontend
+// React 18 + React Router v6, wired to the NarcTrack API
+// NYS 10 NYCRR §80.136 Compliant
+
+import { useState, useEffect, useCallback } from "react";
+import {
+  BrowserRouter, Routes, Route, Navigate,
+  useNavigate, useLocation,
+} from "react-router-dom";
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+const API    = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const STOCKS = ["Main Stock", "Sub-Stock 1", "Sub-Stock 2"];
+const ROUTES_LIST = ["IV", "IM", "IN", "SubQ", "PO", "SL"];
+const MONTHS = [
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December",
+];
+
+// ─── Token helpers ─────────────────────────────────────────────────────────────
+const getToken  = () => sessionStorage.getItem("narcotrack_token");
+const saveToken = t  => sessionStorage.setItem("narcotrack_token", t);
+const clearToken = () => sessionStorage.removeItem("narcotrack_token");
+
+function decodeJwt(t) {
+  try { return JSON.parse(atob(t.split(".")[1])); }
+  catch { return null; }
+}
+
+// ─── Authenticated fetch helper ───────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const token = getToken();
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    clearToken();
+    window.location.href = "/login";
+    throw new Error("Session expired");
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+// Download a CSV export — response is a file, not JSON
+async function downloadExport(urlPath) {
+  const token = getToken();
+  const res = await fetch(`${API}${urlPath}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert(err.error || "Export failed");
+    return;
+  }
+  const cd       = res.headers.get("content-disposition") || "";
+  const match    = cd.match(/filename="([^"]+)"/);
+  const filename = match ? match[1] : "export.csv";
+  const blob     = await res.blob();
+  const url      = URL.createObjectURL(blob);
+  const a        = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const S = {
+  app:        { fontFamily: "'Segoe UI', sans-serif", minHeight: "100vh", background: "#f1f5f9" },
+  nav:        { background: "#1e293b", color: "#fff", padding: "0 20px", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" },
+  navTitle:   { fontWeight: 700, fontSize: 17, marginRight: 12, padding: "13px 0", whiteSpace: "nowrap" },
+  navTab:     a => ({ padding: "13px 12px", cursor: "pointer", border: "none", background: "none", color: a ? "#38bdf8" : "#94a3b8", borderBottom: a ? "2px solid #38bdf8" : "2px solid transparent", fontWeight: a ? 600 : 400, fontSize: 13 }),
+  navUser:    { marginLeft: "auto", fontSize: 12, color: "#94a3b8", display: "flex", alignItems: "center", gap: 8, paddingLeft: 8 },
+  logoutBtn:  { background: "#ef4444", border: "none", color: "#fff", padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontSize: 12 },
+  page:       { padding: 20, maxWidth: 1200, margin: "0 auto" },
+  card:       { background: "#fff", borderRadius: 8, padding: 20, boxShadow: "0 1px 3px rgba(0,0,0,.08)", marginBottom: 16 },
+  h2:         { margin: "0 0 16px", fontSize: 20, color: "#1e293b" },
+  h3:         { margin: "0 0 14px", fontSize: 15, color: "#334155" },
+  tbl:        { width: "100%", borderCollapse: "collapse", fontSize: 13 },
+  th:         { background: "#f8fafc", padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #e2e8f0", color: "#475569", fontWeight: 600 },
+  td:         { padding: "8px 10px", borderBottom: "1px solid #f1f5f9", color: "#334155" },
+  form2:      { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
+  form3:      { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 },
+  label:      { display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "#475569" },
+  input:      { padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 4, fontSize: 13, outline: "none" },
+  select:     { padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 4, fontSize: 13, background: "#fff" },
+  textarea:   { padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 4, fontSize: 13, minHeight: 60, resize: "vertical" },
+  span2:      { gridColumn: "1 / -1" },
+  btn:        { padding: "7px 14px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 },
+  btnPrimary: { padding: "8px 18px", borderRadius: 4, border: "none", cursor: "pointer", background: "#3b82f6", color: "#fff", fontWeight: 600, fontSize: 13 },
+  btnSuccess: { padding: "5px 10px", borderRadius: 4, border: "none", cursor: "pointer", background: "#22c55e", color: "#fff", fontSize: 12 },
+  btnDanger:  { padding: "5px 10px", borderRadius: 4, border: "none", cursor: "pointer", background: "#ef4444", color: "#fff", fontSize: 12 },
+  btnGray:    { padding: "5px 10px", borderRadius: 4, border: "none", cursor: "pointer", background: "#64748b", color: "#fff", fontSize: 12 },
+  btnExport:  c => ({ padding: "9px 16px", borderRadius: 4, border: "none", cursor: "pointer", background: c || "#0ea5e9", color: "#fff", fontWeight: 600, fontSize: 13 }),
+  row:        { display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" },
+  filterRow:  { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-end" },
+  errBox:     { background: "#fee2e2", color: "#dc2626", padding: "9px 12px", borderRadius: 6, marginBottom: 12, fontSize: 13 },
+  okBox:      { background: "#dcfce7", color: "#166534", padding: "9px 12px", borderRadius: 6, marginBottom: 12, fontSize: 13 },
+  loading:    { padding: 40, textAlign: "center", color: "#64748b" },
+  center:     { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", fontSize: 16, color: "#64748b" },
+  pill:       ok => ({ display: "inline-block", padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600, background: ok ? "#dcfce7" : "#fee2e2", color: ok ? "#166534" : "#dc2626" }),
+  roleBadge:  r  => ({ display: "inline-block", padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600, background: r === "admin" ? "#ede9fe" : r === "pending" ? "#fef3c7" : "#dbeafe", color: r === "admin" ? "#7c3aed" : r === "pending" ? "#b45309" : "#1d4ed8" }),
+  statBox:    { background: "#f8fafc", borderRadius: 6, padding: 14, textAlign: "center" },
+  statNum:    { fontSize: 28, fontWeight: 700, color: "#1e293b" },
+  statLabel:  { fontSize: 11, color: "#64748b", marginTop: 2 },
+  // Login
+  loginWrap:  { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a" },
+  loginCard:  { background: "#fff", borderRadius: 12, padding: 40, width: 360, boxShadow: "0 20px 60px rgba(0,0,0,.35)" },
+  loginTitle: { margin: "0 0 4px", fontSize: 26, fontWeight: 700, color: "#1e293b", textAlign: "center" },
+  loginSub:   { margin: "0 0 24px", fontSize: 11, color: "#64748b", textAlign: "center" },
+  loginInput: { display: "block", width: "100%", padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: 14, marginBottom: 10, boxSizing: "border-box" },
+  loginBtn:   { display: "block", width: "100%", padding: 11, background: "#3b82f6", color: "#fff", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 14, cursor: "pointer", marginBottom: 10 },
+  googleBtn:  { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", padding: 11, border: "1px solid #cbd5e1", borderRadius: 6, background: "#fff", fontSize: 14, fontWeight: 500, cursor: "pointer", textDecoration: "none", color: "#334155", gap: 10, boxSizing: "border-box" },
+  divider:    { textAlign: "center", color: "#94a3b8", margin: "14px 0", fontSize: 12 },
+};
+
+// ─── Auth Callback — /auth-callback ───────────────────────────────────────────
+function AuthCallback() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token  = params.get("token");
+    const error  = params.get("error");
+    if (error === "pending") {
+      navigate("/login?msg=" + encodeURIComponent("Account pending role assignment — contact an admin."));
+    } else if (error) {
+      navigate("/login?msg=" + encodeURIComponent("Google sign-in failed. Try again."));
+    } else if (token) {
+      saveToken(token);
+      navigate("/");
+    } else {
+      navigate("/login?msg=No+token+received");
+    }
+  }, [navigate]);
+  return <div style={S.center}>Completing sign-in…</div>;
+}
+
+// ─── Login Page — /login ──────────────────────────────────────────────────────
+function LoginPage({ onLogin }) {
+  const [form, setForm] = useState({ username: "", password: "" });
+  const [err,  setErr ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const location = useLocation();
+
+  useEffect(() => {
+    const msg = new URLSearchParams(location.search).get("msg");
+    if (msg) setErr(msg);
+  }, [location.search]);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      const data = await api("/api/login", { method: "POST", body: JSON.stringify(form) });
+      saveToken(data.token);
+      onLogin(decodeJwt(data.token));
+    } catch (ex) { setErr(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={S.loginWrap}>
+      <div style={S.loginCard}>
+        <h1 style={S.loginTitle}>🚑 NarcTrack EMS</h1>
+        <p style={S.loginSub}>NYS 10 NYCRR §80.136 Controlled Substance Management</p>
+        {err && <div style={S.errBox}>{err}</div>}
+        <form onSubmit={submit}>
+          <input style={S.loginInput} placeholder="Username or email"
+            value={form.username} onChange={f("username")} required autoFocus />
+          <input style={S.loginInput} type="password" placeholder="Password"
+            value={form.password} onChange={f("password")} required />
+          <button style={S.loginBtn} type="submit" disabled={busy}>
+            {busy ? "Signing in…" : "Sign In"}
+          </button>
+        </form>
+        <div style={S.divider}>— or —</div>
+        <a href={`${API}/api/auth/google`} style={S.googleBtn}>
+          {/* Google G logo */}
+          <svg width="18" height="18" viewBox="0 0 48 48">
+            <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
+            <path fill="#FF3D00" d="m6.306 14.691 6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
+            <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
+            <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+          </svg>
+          Sign in with Google
+        </a>
+      </div>
+    </div>
+  );
+}
+
+// ─── Inventory Tab ────────────────────────────────────────────────────────────
+function InventoryTab({ user }) {
+  const [inv,      setInv     ] = useState({});
+  const [loading,  setLoading ] = useState(true);
+  const [showAdd,  setShowAdd ] = useState(false);
+  const [err,      setErr     ] = useState("");
+  const [msg,      setMsg     ] = useState("");
+  const [form, setForm] = useState({
+    stock: STOCKS[0], drug: "", conc: "", unit: "mL", qty: "",
+    minQty: 5, manufacturer: "", lot: "", supplier: "", supplierDEA: "",
+  });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setInv(await api("/api/inventory")); }
+    catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  async function addDrug(e) {
+    e.preventDefault();
+    try {
+      await api("/api/inventory", { method: "POST", body: JSON.stringify(form) });
+      setMsg("Drug added to inventory."); setShowAdd(false);
+      setForm({ stock: STOCKS[0], drug: "", conc: "", unit: "mL", qty: "", minQty: 5, manufacturer: "", lot: "", supplier: "", supplierDEA: "" });
+      load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  if (loading) return <div style={S.loading}>Loading inventory…</div>;
+
+  return (
+    <div style={S.page}>
+      <div style={{ ...S.row, justifyContent: "space-between" }}>
+        <h2 style={S.h2}>Inventory</h2>
+        {user.role === "admin" && (
+          <button style={S.btnPrimary} onClick={() => setShowAdd(v => !v)}>+ Add Drug</button>
+        )}
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+
+      {showAdd && (
+        <div style={S.card}>
+          <h3 style={S.h3}>Add Drug to Inventory</h3>
+          <form onSubmit={addDrug} style={S.form3}>
+            <label style={S.label}>Stock
+              <select style={S.select} value={form.stock} onChange={f("stock")} required>
+                {STOCKS.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </label>
+            <label style={S.label}>Drug Name<input style={S.input} value={form.drug} onChange={f("drug")} required /></label>
+            <label style={S.label}>Concentration (e.g. 10mg/mL)<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
+            <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} placeholder="mL" /></label>
+            <label style={S.label}>Initial Qty<input style={S.input} type="number" min="0" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
+            <label style={S.label}>Min Qty Alert<input style={S.input} type="number" min="0" value={form.minQty} onChange={f("minQty")} /></label>
+            <label style={S.label}>Manufacturer<input style={S.input} value={form.manufacturer} onChange={f("manufacturer")} /></label>
+            <label style={S.label}>Lot #<input style={S.input} value={form.lot} onChange={f("lot")} /></label>
+            <label style={S.label}>Supplier<input style={S.input} value={form.supplier} onChange={f("supplier")} /></label>
+            <label style={S.label}>Supplier DEA #<input style={S.input} value={form.supplierDEA} onChange={f("supplierDEA")} /></label>
+            <div style={{ ...S.span2, display: "flex", gap: 8, gridColumn: "1/-1" }}>
+              <button style={S.btnPrimary} type="submit">Save</button>
+              <button style={{ ...S.btn, background: "#e2e8f0", color: "#475569" }} type="button" onClick={() => setShowAdd(false)}>Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {STOCKS.map(stock => (
+        <div key={stock} style={S.card}>
+          <h3 style={S.h3}>{stock}</h3>
+          {!inv[stock]?.length ? (
+            <p style={{ color: "#94a3b8", fontSize: 13 }}>No drugs in this stock.</p>
+          ) : (
+            <table style={S.tbl}>
+              <thead>
+                <tr>
+                  {["Drug","Concentration","Qty","Unit","Min Qty","Status","Manufacturer","Lot #","Supplier"].map(h =>
+                    <th key={h} style={S.th}>{h}</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {inv[stock].map(item => (
+                  <tr key={item.id}>
+                    <td style={S.td}><strong>{item.drug}</strong></td>
+                    <td style={S.td}>{item.conc}</td>
+                    <td style={S.td}><strong style={{ color: item.qty <= item.min_qty ? "#dc2626" : "#16a34a" }}>{item.qty}</strong></td>
+                    <td style={S.td}>{item.unit}</td>
+                    <td style={S.td}>{item.min_qty}</td>
+                    <td style={S.td}>
+                      <span style={S.pill(item.qty > item.min_qty)}>
+                        {item.qty <= 0 ? "OUT" : item.qty <= item.min_qty ? "LOW" : "OK"}
+                      </span>
+                    </td>
+                    <td style={S.td}>{item.manufacturer}</td>
+                    <td style={S.td}>{item.lot}</td>
+                    <td style={S.td}>{item.supplier}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Log Administration Tab ───────────────────────────────────────────────────
+function LogAdminTab({ user }) {
+  const blank = () => ({
+    stock: "Sub-Stock 1", drug: "", conc: "", dose: "", doseQty: "",
+    route: "IV", runId: "", patientName: "", complaint: "",
+    providerNum: user.badge || "", providerName: user.name || "",
+    mdName: "", mdSig: "", receivingHospital: "", hospitalRecordNum: "",
+    witness: "", wasteAmt: "", wasteWitness: "", wasteReason: "",
+  });
+  const [form, setForm] = useState(blank);
+  const [inv,  setInv ] = useState({});
+  const [err,  setErr ] = useState("");
+  const [msg,  setMsg ] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api("/api/inventory").then(setInv).catch(() => {}); }, []);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const stockDrugs  = inv[form.stock] || [];
+
+  async function submit(e) {
+    e.preventDefault(); setBusy(true); setErr(""); setMsg("");
+    try {
+      await api("/api/pending", { method: "POST", body: JSON.stringify(form) });
+      setMsg("Administration submitted — pending admin verification.");
+      setForm(blank());
+    } catch (ex) { setErr(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Log Drug Administration</h2>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+      <div style={S.card}>
+        <form onSubmit={submit} style={S.form3}>
+          <label style={S.label}>Stock Location
+            <select style={S.select} value={form.stock} onChange={f("stock")} required>
+              {availStocks.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </label>
+          <label style={S.label}>Drug
+            {stockDrugs.length > 0 ? (
+              <select style={S.select} value={form.drug} onChange={e => {
+                const d = stockDrugs.find(x => x.drug === e.target.value);
+                setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "" }));
+              }} required>
+                <option value="">Select drug…</option>
+                {stockDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug}</option>)}
+              </select>
+            ) : (
+              <input style={S.input} value={form.drug} onChange={f("drug")} placeholder="Drug name" required />
+            )}
+          </label>
+          <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} placeholder="e.g. 10mg/mL" required /></label>
+          <label style={S.label}>Dose Administered<input style={S.input} value={form.dose} onChange={f("dose")} placeholder="e.g. 5mg" required /></label>
+          <label style={S.label}>Qty Withdrawn (mL)<input style={S.input} type="number" min="0.01" step="0.01" value={form.doseQty} onChange={f("doseQty")} required /></label>
+          <label style={S.label}>Route
+            <select style={S.select} value={form.route} onChange={f("route")} required>
+              {ROUTES_LIST.map(r => <option key={r}>{r}</option>)}
+            </select>
+          </label>
+          <label style={S.label}>Run / Call ID<input style={S.input} value={form.runId} onChange={f("runId")} required /></label>
+          <label style={S.label}>Patient Name<input style={S.input} value={form.patientName} onChange={f("patientName")} required /></label>
+          <label style={S.label}>Chief Complaint<input style={S.input} value={form.complaint} onChange={f("complaint")} /></label>
+          <label style={S.label}>Provider # (AEMT)<input style={S.input} value={form.providerNum} onChange={f("providerNum")} required /></label>
+          <label style={S.label}>Provider Name<input style={S.input} value={form.providerName} onChange={f("providerName")} required /></label>
+          <label style={S.label}>Ordering Physician<input style={S.input} value={form.mdName} onChange={f("mdName")} required /></label>
+          <label style={S.label}>MD Authorization / Sig<input style={S.input} value={form.mdSig} onChange={f("mdSig")} /></label>
+          <label style={S.label}>Receiving Hospital<input style={S.input} value={form.receivingHospital} onChange={f("receivingHospital")} required /></label>
+          <label style={S.label}>Hospital Record #<input style={S.input} value={form.hospitalRecordNum} onChange={f("hospitalRecordNum")} /></label>
+          <label style={S.label}>Witness<input style={S.input} value={form.witness} onChange={f("witness")} required /></label>
+          <label style={S.label}>Waste Amount (mL)<input style={S.input} type="number" min="0" step="0.01" value={form.wasteAmt} onChange={f("wasteAmt")} /></label>
+          <label style={S.label}>Waste Witness<input style={S.input} value={form.wasteWitness} onChange={f("wasteWitness")} /></label>
+          <label style={S.label}>Waste Reason<input style={S.input} value={form.wasteReason} onChange={f("wasteReason")} /></label>
+          <div style={{ gridColumn: "1/-1" }}>
+            <button style={S.btnPrimary} type="submit" disabled={busy}>
+              {busy ? "Submitting…" : "Submit Administration Record"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Pending Verifications Tab (admin) ────────────────────────────────────────
+function PendingTab() {
+  const [records,   setRecords  ] = useState([]);
+  const [loading,   setLoading  ] = useState(true);
+  const [err,       setErr      ] = useState("");
+  const [noteMap,   setNoteMap  ] = useState({});
+  const [reasonMap, setReasonMap] = useState({});
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setRecords(await api("/api/pending")); }
+    catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function verify(id) {
+    try {
+      await api(`/api/pending/${id}/verify`, { method: "POST", body: JSON.stringify({ note: noteMap[id] || "" }) });
+      load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function reject(id) {
+    if (!reasonMap[id]) { setErr("Rejection reason required."); return; }
+    try {
+      await api(`/api/pending/${id}/reject`, { method: "POST", body: JSON.stringify({ reason: reasonMap[id] }) });
+      load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  if (loading) return <div style={S.loading}>Loading…</div>;
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Pending Verifications ({records.length})</h2>
+      {err && <div style={S.errBox}>{err}</div>}
+      {records.length === 0 && <div style={S.card}><p style={{ color: "#64748b", margin: 0 }}>No pending records.</p></div>}
+      {records.map(r => (
+        <div key={r.id} style={S.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            <span><strong>{r.drug}</strong> {r.conc} — {r.dose} ({r.dose_qty} mL) via {r.route} &nbsp;<span style={S.roleBadge("user")}>{r.stock}</span></span>
+            <span style={{ fontSize: 12, color: "#94a3b8" }}>{new Date(r.created_at).toLocaleString()}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, fontSize: 13, marginBottom: 12 }}>
+            <div><strong>Run ID:</strong> {r.run_id}</div>
+            <div><strong>Patient:</strong> {r.patient_name}</div>
+            <div><strong>Complaint:</strong> {r.complaint}</div>
+            <div><strong>Provider:</strong> {r.provider_name} #{r.provider_num}</div>
+            <div><strong>MD:</strong> {r.md_name}</div>
+            <div><strong>Hospital:</strong> {r.receiving_hospital}</div>
+            <div><strong>Witness:</strong> {r.witness}</div>
+            <div><strong>Waste:</strong> {r.waste_amt || 0} mL — {r.waste_witness || "—"}</div>
+            <div><strong>Submitted by:</strong> {r.logged_by}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <input style={{ ...S.input, flex: 1, minWidth: 160 }} placeholder="Verify note (optional)"
+              value={noteMap[r.id] || ""} onChange={e => setNoteMap(p => ({ ...p, [r.id]: e.target.value }))} />
+            <button style={S.btnSuccess} onClick={() => verify(r.id)}>✓ Verify</button>
+            <input style={{ ...S.input, flex: 1, minWidth: 180 }} placeholder="Rejection reason (required)"
+              value={reasonMap[r.id] || ""} onChange={e => setReasonMap(p => ({ ...p, [r.id]: e.target.value }))} />
+            <button style={S.btnDanger} onClick={() => reject(r.id)}>✕ Reject</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Administration Log Tab ───────────────────────────────────────────────────
+function AdminLogTab({ user }) {
+  const now = new Date();
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err,     setErr    ] = useState("");
+  const [filters, setFilters] = useState({ year: String(now.getFullYear()), month: String(now.getMonth()), stock: "", status: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const p = new URLSearchParams();
+      if (filters.year)   p.set("year",   filters.year);
+      if (filters.month !== "") p.set("month", filters.month);
+      if (filters.stock)  p.set("stock",  filters.stock);
+      if (filters.status) p.set("status", filters.status);
+      setRecords(await api("/api/administrations?" + p));
+    } catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, [filters]);
+  useEffect(() => { load(); }, [load]);
+
+  const ff = k => e => setFilters(p => ({ ...p, [k]: e.target.value }));
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Administration Log</h2>
+      {err && <div style={S.errBox}>{err}</div>}
+      <div style={S.filterRow}>
+        <label style={S.label}>Year<input style={{ ...S.input, width: 80 }} value={filters.year} onChange={ff("year")} /></label>
+        <label style={S.label}>Month
+          <select style={S.select} value={filters.month} onChange={ff("month")}>
+            <option value="">All</option>
+            {MONTHS.map((m, i) => <option key={i} value={i}>{m}</option>)}
+          </select>
+        </label>
+        {user.role === "admin" && (
+          <label style={S.label}>Stock
+            <select style={S.select} value={filters.stock} onChange={ff("stock")}>
+              <option value="">All</option>
+              {STOCKS.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </label>
+        )}
+        <label style={S.label}>Status
+          <select style={S.select} value={filters.status} onChange={ff("status")}>
+            <option value="">All</option>
+            <option value="verified">Verified</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </label>
+        <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }} onClick={load}>Refresh</button>
+      </div>
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <table style={S.tbl}>
+            <thead>
+              <tr>{["Date","Drug","Dose","Route","Run ID","Patient","Provider","MD","Hospital","Status","By"].map(h =>
+                <th key={h} style={S.th}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {records.length === 0 && <tr><td colSpan={11} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No records found.</td></tr>}
+              {records.map(r => (
+                <tr key={r.id}>
+                  <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
+                  <td style={S.td}>{r.drug} {r.conc}</td>
+                  <td style={S.td}>{r.dose} ({r.dose_qty}mL)</td>
+                  <td style={S.td}>{r.route}</td>
+                  <td style={S.td}>{r.run_id}</td>
+                  <td style={S.td}>{r.patient_name}</td>
+                  <td style={S.td}>{r.provider_name}</td>
+                  <td style={S.td}>{r.md_name}</td>
+                  <td style={S.td}>{r.receiving_hospital}</td>
+                  <td style={S.td}><span style={S.pill(r.status === "verified")}>{r.status.toUpperCase()}</span></td>
+                  <td style={S.td}>{r.logged_by}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Purchases Tab (admin) ────────────────────────────────────────────────────
+function PurchasesTab() {
+  const now  = new Date();
+  const blank = () => ({ stock: STOCKS[0], drug: "", conc: "", unit: "mL", qty: "", supplier: "", supplierDEA: "", manufacturer: "", lot: "", receivedBy: "" });
+  const [records,  setRecords ] = useState([]);
+  const [loading,  setLoading ] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm    ] = useState(blank());
+  const [err,      setErr     ] = useState("");
+  const [msg,      setMsg     ] = useState("");
+  const [year,     setYear    ] = useState(String(now.getFullYear()));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setRecords(await api(`/api/purchases?year=${year}`)); }
+    catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, [year]);
+  useEffect(() => { load(); }, [load]);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  async function submit(e) {
+    e.preventDefault();
+    try {
+      await api("/api/purchases", { method: "POST", body: JSON.stringify(form) });
+      setMsg("Purchase recorded and inventory updated."); setShowForm(false); setForm(blank()); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  return (
+    <div style={S.page}>
+      <div style={{ ...S.row, justifyContent: "space-between" }}>
+        <h2 style={S.h2}>Purchases</h2>
+        <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ Log Purchase</button>
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+      <div style={S.filterRow}>
+        <label style={S.label}>Year<input style={{ ...S.input, width: 80 }} value={year} onChange={e => setYear(e.target.value)} /></label>
+        <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }} onClick={load}>Filter</button>
+      </div>
+      {showForm && (
+        <div style={S.card}>
+          <h3 style={S.h3}>Log Purchase</h3>
+          <form onSubmit={submit} style={S.form3}>
+            <label style={S.label}>Stock<select style={S.select} value={form.stock} onChange={f("stock")} required>{STOCKS.map(s=><option key={s}>{s}</option>)}</select></label>
+            <label style={S.label}>Drug<input style={S.input} value={form.drug} onChange={f("drug")} required /></label>
+            <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
+            <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} /></label>
+            <label style={S.label}>Quantity<input style={S.input} type="number" min="0.01" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
+            <label style={S.label}>Supplier<input style={S.input} value={form.supplier} onChange={f("supplier")} required /></label>
+            <label style={S.label}>Supplier DEA #<input style={S.input} value={form.supplierDEA} onChange={f("supplierDEA")} required /></label>
+            <label style={S.label}>Manufacturer<input style={S.input} value={form.manufacturer} onChange={f("manufacturer")} required /></label>
+            <label style={S.label}>Lot #<input style={S.input} value={form.lot} onChange={f("lot")} required /></label>
+            <label style={S.label}>Received By<input style={S.input} value={form.receivedBy} onChange={f("receivedBy")} required /></label>
+            <div style={{ gridColumn: "1/-1" }}><button style={S.btnPrimary} type="submit">Save Purchase</button></div>
+          </form>
+        </div>
+      )}
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <table style={S.tbl}>
+            <thead><tr>{["Date","Stock","Drug","Conc","Qty","Supplier","DEA #","Manufacturer","Lot","Received By","By"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {records.length === 0 && <tr><td colSpan={11} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No purchases.</td></tr>}
+              {records.map(r => (
+                <tr key={r.id}>
+                  <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
+                  <td style={S.td}>{r.stock}</td>
+                  <td style={S.td}>{r.drug}</td>
+                  <td style={S.td}>{r.conc}</td>
+                  <td style={S.td}>{r.qty} {r.unit}</td>
+                  <td style={S.td}>{r.supplier}</td>
+                  <td style={S.td}>{r.supplier_dea}</td>
+                  <td style={S.td}>{r.manufacturer}</td>
+                  <td style={S.td}>{r.lot}</td>
+                  <td style={S.td}>{r.received_by}</td>
+                  <td style={S.td}>{r.logged_by}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Transfers Tab ────────────────────────────────────────────────────────────
+function TransfersTab({ user }) {
+  const now  = new Date();
+  const blank = () => ({ fromStock: "Main Stock", toStock: "Sub-Stock 1", drug: "", conc: "", unit: "mL", qty: "", transferredBy: user.name || "", witness: "" });
+  const [records,  setRecords ] = useState([]);
+  const [loading,  setLoading ] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm    ] = useState(blank());
+  const [inv,      setInv     ] = useState({});
+  const [err,      setErr     ] = useState("");
+  const [msg,      setMsg     ] = useState("");
+  const [year,     setYear    ] = useState(String(now.getFullYear()));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [r, i] = await Promise.all([api(`/api/transfers?year=${year}`), api("/api/inventory")]);
+      setRecords(r); setInv(i);
+    } catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, [year]);
+  useEffect(() => { load(); }, [load]);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const fromDrugs   = inv[form.fromStock] || [];
+
+  async function submit(e) {
+    e.preventDefault();
+    try {
+      await api("/api/transfers", { method: "POST", body: JSON.stringify(form) });
+      setMsg("Transfer recorded."); setShowForm(false); setForm(blank()); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  return (
+    <div style={S.page}>
+      <div style={{ ...S.row, justifyContent: "space-between" }}>
+        <h2 style={S.h2}>Transfers</h2>
+        <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ Log Transfer</button>
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+      <div style={S.filterRow}>
+        <label style={S.label}>Year<input style={{ ...S.input, width: 80 }} value={year} onChange={e => setYear(e.target.value)} /></label>
+        <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }} onClick={load}>Filter</button>
+      </div>
+      {showForm && (
+        <div style={S.card}>
+          <h3 style={S.h3}>Log Transfer</h3>
+          <form onSubmit={submit} style={S.form3}>
+            <label style={S.label}>From Stock
+              <select style={S.select} value={form.fromStock} onChange={f("fromStock")} required>
+                {availStocks.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </label>
+            <label style={S.label}>To Stock
+              <select style={S.select} value={form.toStock} onChange={f("toStock")} required>
+                {availStocks.filter(s => s !== form.fromStock).map(s => <option key={s}>{s}</option>)}
+              </select>
+            </label>
+            <label style={S.label}>Drug
+              {fromDrugs.length > 0 ? (
+                <select style={S.select} value={form.drug} onChange={e => {
+                  const d = fromDrugs.find(x => x.drug === e.target.value);
+                  setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "" }));
+                }} required>
+                  <option value="">Select…</option>
+                  {fromDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug} ({d.qty} {d.unit} avail.)</option>)}
+                </select>
+              ) : <input style={S.input} value={form.drug} onChange={f("drug")} required />}
+            </label>
+            <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
+            <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} /></label>
+            <label style={S.label}>Quantity<input style={S.input} type="number" min="0.01" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
+            <label style={S.label}>Transferred By<input style={S.input} value={form.transferredBy} onChange={f("transferredBy")} required /></label>
+            <label style={S.label}>Witness<input style={S.input} value={form.witness} onChange={f("witness")} required /></label>
+            <div style={{ gridColumn: "1/-1" }}><button style={S.btnPrimary} type="submit">Save Transfer</button></div>
+          </form>
+        </div>
+      )}
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <table style={S.tbl}>
+            <thead><tr>{["Date","From","To","Drug","Conc","Qty","Transferred By","Witness","By"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {records.length === 0 && <tr><td colSpan={9} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No transfers.</td></tr>}
+              {records.map(r => (
+                <tr key={r.id}>
+                  <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
+                  <td style={S.td}>{r.from_stock}</td>
+                  <td style={S.td}>{r.to_stock}</td>
+                  <td style={S.td}>{r.drug}</td>
+                  <td style={S.td}>{r.conc}</td>
+                  <td style={S.td}>{r.qty} {r.unit}</td>
+                  <td style={S.td}>{r.transferred_by}</td>
+                  <td style={S.td}>{r.witness}</td>
+                  <td style={S.td}>{r.logged_by}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Waste Tab ────────────────────────────────────────────────────────────────
+function WasteTab({ user }) {
+  const now  = new Date();
+  const blank = () => ({ stock: "Sub-Stock 1", drug: "", conc: "", unit: "mL", qty: "", reason: "", disposedBy: user.name || "", witness: "", method: "Inactivation Kit" });
+  const [records,  setRecords ] = useState([]);
+  const [loading,  setLoading ] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm    ] = useState(blank());
+  const [inv,      setInv     ] = useState({});
+  const [err,      setErr     ] = useState("");
+  const [msg,      setMsg     ] = useState("");
+  const [year,     setYear    ] = useState(String(now.getFullYear()));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [r, i] = await Promise.all([api(`/api/waste?year=${year}`), api("/api/inventory")]);
+      setRecords(r); setInv(i);
+    } catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, [year]);
+  useEffect(() => { load(); }, [load]);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const stockDrugs  = inv[form.stock] || [];
+
+  async function submit(e) {
+    e.preventDefault();
+    try {
+      await api("/api/waste", { method: "POST", body: JSON.stringify(form) });
+      setMsg("Waste record logged."); setShowForm(false); setForm(blank()); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  return (
+    <div style={S.page}>
+      <div style={{ ...S.row, justifyContent: "space-between" }}>
+        <h2 style={S.h2}>Waste Records</h2>
+        <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ Log Waste</button>
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+      <div style={S.filterRow}>
+        <label style={S.label}>Year<input style={{ ...S.input, width: 80 }} value={year} onChange={e => setYear(e.target.value)} /></label>
+        <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }} onClick={load}>Filter</button>
+      </div>
+      {showForm && (
+        <div style={S.card}>
+          <h3 style={S.h3}>Log Waste / Destruction</h3>
+          <form onSubmit={submit} style={S.form3}>
+            <label style={S.label}>Stock<select style={S.select} value={form.stock} onChange={f("stock")} required>{availStocks.map(s=><option key={s}>{s}</option>)}</select></label>
+            <label style={S.label}>Drug
+              {stockDrugs.length > 0 ? (
+                <select style={S.select} value={form.drug} onChange={e => {
+                  const d = stockDrugs.find(x => x.drug === e.target.value);
+                  setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "" }));
+                }} required>
+                  <option value="">Select…</option>
+                  {stockDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug}</option>)}
+                </select>
+              ) : <input style={S.input} value={form.drug} onChange={f("drug")} required />}
+            </label>
+            <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
+            <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} /></label>
+            <label style={S.label}>Quantity<input style={S.input} type="number" min="0.01" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
+            <label style={S.label}>Reason<input style={S.input} value={form.reason} onChange={f("reason")} required /></label>
+            <label style={S.label}>Disposed By<input style={S.input} value={form.disposedBy} onChange={f("disposedBy")} required /></label>
+            <label style={S.label}>Witness<input style={S.input} value={form.witness} onChange={f("witness")} required /></label>
+            <label style={S.label}>Method
+              <select style={S.select} value={form.method} onChange={f("method")} required>
+                {["Inactivation Kit","DEA Disposal Site","Reverse Distributor","Other"].map(m => <option key={m}>{m}</option>)}
+              </select>
+            </label>
+            <div style={{ gridColumn: "1/-1" }}><button style={S.btnPrimary} type="submit">Save Waste Record</button></div>
+          </form>
+        </div>
+      )}
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <table style={S.tbl}>
+            <thead><tr>{["Date","Stock","Drug","Qty","Reason","Disposed By","Witness","Method","By"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {records.length === 0 && <tr><td colSpan={9} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No waste records.</td></tr>}
+              {records.map(r => (
+                <tr key={r.id}>
+                  <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
+                  <td style={S.td}>{r.stock}</td>
+                  <td style={S.td}>{r.drug} {r.conc}</td>
+                  <td style={S.td}>{r.qty} {r.unit}</td>
+                  <td style={S.td}>{r.reason}</td>
+                  <td style={S.td}>{r.disposed_by}</td>
+                  <td style={S.td}>{r.witness}</td>
+                  <td style={S.td}>{r.method}</td>
+                  <td style={S.td}>{r.logged_by}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Audits Tab ───────────────────────────────────────────────────────────────
+function AuditsTab({ user }) {
+  const now = new Date();
+  const [records,  setRecords ] = useState([]);
+  const [loading,  setLoading ] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [inv,      setInv     ] = useState({});
+  const [stock,    setStock   ] = useState(user.role === "admin" ? "Main Stock" : "Sub-Stock 1");
+  const [auditor,  setAuditor ] = useState(user.name || "");
+  const [witness,  setWitness ] = useState("");
+  const [notes,    setNotes   ] = useState("");
+  const [counts,   setCounts  ] = useState({});
+  const [err,      setErr     ] = useState("");
+  const [msg,      setMsg     ] = useState("");
+  const [year,     setYear    ] = useState(String(now.getFullYear()));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [r, i] = await Promise.all([api(`/api/audits?year=${year}`), api("/api/inventory")]);
+      setRecords(r); setInv(i);
+    } catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, [year]);
+  useEffect(() => { load(); }, [load]);
+
+  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const stockDrugs  = inv[stock] || [];
+
+  async function submit(e) {
+    e.preventDefault();
+    const results = stockDrugs.map(d => ({
+      drug: d.drug, conc: d.conc, expected: d.qty,
+      counted: parseFloat(counts[d.id] ?? 0),
+      match: parseFloat(counts[d.id] ?? 0) === parseFloat(d.qty),
+    }));
+    try {
+      await api("/api/audits", { method: "POST", body: JSON.stringify({ stock, auditor, witness, results, notes }) });
+      setMsg("Audit saved."); setShowForm(false); setCounts({}); setNotes(""); setWitness(""); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  return (
+    <div style={S.page}>
+      <div style={{ ...S.row, justifyContent: "space-between" }}>
+        <h2 style={S.h2}>Audits / Shift Count</h2>
+        <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ New Audit</button>
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+      <div style={S.filterRow}>
+        <label style={S.label}>Year<input style={{ ...S.input, width: 80 }} value={year} onChange={e => setYear(e.target.value)} /></label>
+        <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }} onClick={load}>Filter</button>
+      </div>
+      {showForm && (
+        <div style={S.card}>
+          <h3 style={S.h3}>Shift Count Audit</h3>
+          <div style={{ ...S.form3, marginBottom: 14 }}>
+            <label style={S.label}>Stock<select style={S.select} value={stock} onChange={e => setStock(e.target.value)}>{availStocks.map(s=><option key={s}>{s}</option>)}</select></label>
+            <label style={S.label}>Auditor<input style={S.input} value={auditor} onChange={e => setAuditor(e.target.value)} required /></label>
+            <label style={S.label}>Witness<input style={S.input} value={witness} onChange={e => setWitness(e.target.value)} required /></label>
+          </div>
+          <form onSubmit={submit}>
+            <table style={S.tbl}>
+              <thead><tr>{["Drug","Concentration","Expected","Counted","Match"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {stockDrugs.length === 0 && <tr><td colSpan={5} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No drugs in this stock.</td></tr>}
+                {stockDrugs.map(d => {
+                  const counted = parseFloat(counts[d.id] ?? "");
+                  const match   = !isNaN(counted) && counted === parseFloat(d.qty);
+                  return (
+                    <tr key={d.id}>
+                      <td style={S.td}>{d.drug}</td>
+                      <td style={S.td}>{d.conc}</td>
+                      <td style={S.td}><strong>{d.qty}</strong> {d.unit}</td>
+                      <td style={S.td}>
+                        <input style={{ ...S.input, width: 80 }} type="number" min="0" step="0.01"
+                          value={counts[d.id] ?? ""} onChange={e => setCounts(p => ({ ...p, [d.id]: e.target.value }))} />
+                      </td>
+                      <td style={S.td}>{counts[d.id] !== undefined && <span style={S.pill(match)}>{match ? "MATCH" : "DISCREPANCY"}</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <label style={{ ...S.label, marginTop: 12 }}>Notes<textarea style={S.textarea} value={notes} onChange={e => setNotes(e.target.value)} /></label>
+            <button style={{ ...S.btnPrimary, marginTop: 12 }} type="submit">Save Audit</button>
+          </form>
+        </div>
+      )}
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <table style={S.tbl}>
+            <thead><tr>{["Date","Stock","Auditor","Witness","Result","Notes"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {records.length === 0 && <tr><td colSpan={6} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No audits.</td></tr>}
+              {records.map(r => {
+                const res = typeof r.results === "string" ? JSON.parse(r.results) : (r.results || []);
+                const disc = Array.isArray(res) ? res.filter(x => !x.match).length : 0;
+                return (
+                  <tr key={r.id}>
+                    <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
+                    <td style={S.td}>{r.stock}</td>
+                    <td style={S.td}>{r.auditor}</td>
+                    <td style={S.td}>{r.witness}</td>
+                    <td style={S.td}><span style={S.pill(disc === 0)}>{disc === 0 ? "All Match" : `${disc} Discrepancy`}</span></td>
+                    <td style={S.td}>{r.notes || "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Monthly Logs Tab (admin) — DOH-3850 & DOH-3851 exports ──────────────────
+function MonthlyLogsTab({ user }) {
+  const now = new Date();
+  const [logs,      setLogs     ] = useState({});
+  const [loading,   setLoading  ] = useState(true);
+  const [selYear,   setSelYear  ] = useState(now.getFullYear());
+  const [selMonth,  setSelMonth ] = useState(now.getMonth());
+  const [form,      setForm     ] = useState({ reviewedBy: user.name || "", mdReview: "", discrepancies: "", notes: "" });
+  const [counts,    setCounts   ] = useState({ admins: 0, purchases: 0, transfers: 0, waste: 0 });
+  const [err,       setErr      ] = useState("");
+  const [msg,       setMsg      ] = useState("");
+  const [exporting, setExporting] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setLogs(await api("/api/monthly-logs")); }
+    catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  const loadCounts = useCallback(async () => {
+    try {
+      const p = `year=${selYear}&month=${selMonth}`;
+      const [admins, purchases, transfers, waste] = await Promise.all([
+        api(`/api/administrations?${p}&status=verified`),
+        api(`/api/purchases?year=${selYear}`),
+        api(`/api/transfers?year=${selYear}`),
+        api(`/api/waste?year=${selYear}`),
+      ]);
+      const inMonth = arr => arr.filter(r => {
+        const d = new Date(r.created_at);
+        return d.getFullYear() === selYear && d.getMonth() === selMonth;
+      });
+      setCounts({ admins: admins.length, purchases: inMonth(purchases).length, transfers: inMonth(transfers).length, waste: inMonth(waste).length });
+    } catch { /* non-fatal */ }
+  }, [selYear, selMonth]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadCounts(); }, [loadCounts]);
+
+  const key = `${selYear}-${String(selMonth + 1).padStart(2, "0")}`;
+  const existing = logs[key];
+  useEffect(() => {
+    if (existing) {
+      setForm({ reviewedBy: existing.reviewed_by || user.name || "", mdReview: existing.md_review || "", discrepancies: existing.discrepancies || "", notes: existing.notes || "" });
+    } else {
+      setForm({ reviewedBy: user.name || "", mdReview: "", discrepancies: "", notes: "" });
+    }
+  }, [existing, selYear, selMonth, user.name]);
+
+  const ff = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+  const years = Array.from({ length: 5 }, (_, i) => now.getFullYear() - i);
+
+  async function save(e) {
+    e.preventDefault();
+    try {
+      await api("/api/monthly-logs", { method: "POST", body: JSON.stringify({
+        year: selYear, month: selMonth,
+        reviewedBy: form.reviewedBy, mdReview: form.mdReview,
+        discrepancies: form.discrepancies, notes: form.notes,
+        admins: counts.admins, purchases: counts.purchases, transfers: counts.transfers, waste: counts.waste,
+      })});
+      setMsg("Monthly log saved."); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function doExport(type, color) {
+    setExporting(type); setErr("");
+    try { await downloadExport(`/api/export/${type}?year=${selYear}&month=${selMonth}`); }
+    catch (ex) { setErr(ex.message); }
+    finally { setExporting(""); }
+  }
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Monthly Logs</h2>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+
+      {/* Month selector + activity counts */}
+      <div style={S.card}>
+        <div style={{ ...S.row, marginBottom: 16 }}>
+          <label style={S.label}>Year
+            <select style={S.select} value={selYear} onChange={e => setSelYear(Number(e.target.value))}>
+              {years.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </label>
+          <label style={S.label}>Month
+            <select style={S.select} value={selMonth} onChange={e => setSelMonth(Number(e.target.value))}>
+              {MONTHS.map((m, i) => <option key={i} value={i}>{m}</option>)}
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 20 }}>
+          {[
+            { label: "Administrations", val: counts.admins },
+            { label: "Purchases",       val: counts.purchases },
+            { label: "Transfers",       val: counts.transfers },
+            { label: "Waste Records",   val: counts.waste },
+          ].map(({ label, val }) => (
+            <div key={label} style={S.statBox}>
+              <div style={S.statNum}>{val}</div>
+              <div style={S.statLabel}>{label}</div>
+            </div>
+          ))}
+        </div>
+
+        <form onSubmit={save} style={S.form2}>
+          <label style={S.label}>Reviewed By<input style={S.input} value={form.reviewedBy} onChange={ff("reviewedBy")} required /></label>
+          <label style={S.label}>Medical Director Sign-Off<input style={S.input} value={form.mdReview} onChange={ff("mdReview")} placeholder="Name / date" /></label>
+          <label style={{ ...S.label, gridColumn: "1/-1" }}>Discrepancies Noted
+            <textarea style={S.textarea} value={form.discrepancies} onChange={ff("discrepancies")} placeholder="Describe any discrepancies, or enter 'None'" />
+          </label>
+          <label style={{ ...S.label, gridColumn: "1/-1" }}>Notes
+            <textarea style={S.textarea} value={form.notes} onChange={ff("notes")} />
+          </label>
+          <div style={{ gridColumn: "1/-1" }}>
+            <button style={S.btnPrimary} type="submit">Save Monthly Log</button>
+          </div>
+        </form>
+      </div>
+
+      {/* DOH Export Buttons */}
+      <div style={S.card}>
+        <h3 style={S.h3}>NYS DOH Exports — {MONTHS[selMonth]} {selYear}</h3>
+        <p style={{ fontSize: 13, color: "#64748b", margin: "0 0 16px" }}>
+          Downloads pre-formatted CSV files mapped to NYS DOH form columns. Open in Excel via File → Open → Comma delimited.
+        </p>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <button style={S.btnExport("#0ea5e9")} onClick={() => doExport("doh3850")} disabled={!!exporting}>
+            {exporting === "doh3850" ? "Generating…" : "⬇ DOH-3850 — Administration Record"}
+          </button>
+          <button style={S.btnExport("#7c3aed")} onClick={() => doExport("doh3851")} disabled={!!exporting}>
+            {exporting === "doh3851" ? "Generating…" : "⬇ DOH-3851 — Inventory / Purchase Record"}
+          </button>
+          <button style={S.btnExport("#0f766e")} onClick={async () => {
+            setExporting("annual"); setErr("");
+            try { await downloadExport(`/api/export/annual?year=${selYear}`); }
+            catch (ex) { setErr(ex.message); }
+            finally { setExporting(""); }
+          }} disabled={!!exporting}>
+            {exporting === "annual" ? "Generating…" : `⬇ Annual Report — ${selYear}`}
+          </button>
+        </div>
+      </div>
+
+      {/* Log history */}
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <h3 style={S.h3}>Log History</h3>
+          <table style={S.tbl}>
+            <thead><tr>{["Month","Reviewed By","MD Sign-Off","Admins","Purchases","Transfers","Waste","Saved By","Saved"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {Object.keys(logs).length === 0 && <tr><td colSpan={9} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No logs saved yet.</td></tr>}
+              {Object.entries(logs).sort(([a],[b]) => b.localeCompare(a)).map(([k, r]) => (
+                <tr key={k}>
+                  <td style={S.td}><strong>{MONTHS[r.month]} {r.year}</strong></td>
+                  <td style={S.td}>{r.reviewed_by}</td>
+                  <td style={S.td}>{r.md_review || "—"}</td>
+                  <td style={S.td}>{r.admin_count}</td>
+                  <td style={S.td}>{r.purchase_count}</td>
+                  <td style={S.td}>{r.transfer_count}</td>
+                  <td style={S.td}>{r.waste_count}</td>
+                  <td style={S.td}>{r.saved_by}</td>
+                  <td style={S.td}>{r.saved_at ? new Date(r.saved_at).toLocaleDateString() : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Users Tab (admin) ────────────────────────────────────────────────────────
+function UsersTab({ currentUser }) {
+  const blank = () => ({ username: "", email: "", password: "", name: "", badge: "", role: "user" });
+  const [users,    setUsers   ] = useState([]);
+  const [loading,  setLoading ] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm    ] = useState(blank());
+  const [editId,   setEditId  ] = useState(null);
+  const [editData, setEditData] = useState({});
+  const [err,      setErr     ] = useState("");
+  const [msg,      setMsg     ] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setUsers(await api("/api/users")); }
+    catch (ex) { setErr(ex.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  async function addUser(e) {
+    e.preventDefault();
+    try {
+      await api("/api/users", { method: "POST", body: JSON.stringify(form) });
+      setMsg("User created."); setShowForm(false); setForm(blank()); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function saveEdit(id) {
+    try {
+      await api(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(editData) });
+      setMsg("User updated."); setEditId(null); setEditData({}); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function deleteUser(id) {
+    if (!window.confirm("Delete this user? This cannot be undone.")) return;
+    try {
+      await api(`/api/users/${id}`, { method: "DELETE" });
+      setMsg("User deleted."); load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  return (
+    <div style={S.page}>
+      <div style={{ ...S.row, justifyContent: "space-between" }}>
+        <h2 style={S.h2}>User Management</h2>
+        <button style={S.btnPrimary} onClick={() => setShowForm(v => !v)}>+ Add User</button>
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+      {showForm && (
+        <div style={S.card}>
+          <h3 style={S.h3}>Add User</h3>
+          <form onSubmit={addUser} style={S.form3}>
+            <label style={S.label}>Username<input style={S.input} value={form.username} onChange={f("username")} required /></label>
+            <label style={S.label}>Email<input style={S.input} type="email" value={form.email} onChange={f("email")} /></label>
+            <label style={S.label}>Password (blank = Google only)<input style={S.input} type="password" value={form.password} onChange={f("password")} /></label>
+            <label style={S.label}>Full Name<input style={S.input} value={form.name} onChange={f("name")} required /></label>
+            <label style={S.label}>Badge #<input style={S.input} value={form.badge} onChange={f("badge")} required /></label>
+            <label style={S.label}>Role
+              <select style={S.select} value={form.role} onChange={f("role")}>
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+                <option value="pending">Pending</option>
+              </select>
+            </label>
+            <div style={{ gridColumn: "1/-1" }}><button style={S.btnPrimary} type="submit">Create User</button></div>
+          </form>
+        </div>
+      )}
+      {loading ? <div style={S.loading}>Loading…</div> : (
+        <div style={S.card}>
+          <table style={S.tbl}>
+            <thead><tr>{["Name","Username","Email","Badge","Role","Actions"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id}>
+                  <td style={S.td}>
+                    {editId === u.id
+                      ? <input style={{ ...S.input, width: 130 }} value={editData.name ?? u.name} onChange={e => setEditData(p => ({ ...p, name: e.target.value }))} />
+                      : u.name}
+                  </td>
+                  <td style={S.td}>{u.username}</td>
+                  <td style={S.td}>{u.email}</td>
+                  <td style={S.td}>
+                    {editId === u.id
+                      ? <input style={{ ...S.input, width: 80 }} value={editData.badge ?? u.badge} onChange={e => setEditData(p => ({ ...p, badge: e.target.value }))} />
+                      : u.badge}
+                  </td>
+                  <td style={S.td}>
+                    {editId === u.id ? (
+                      <select style={S.select} value={editData.role ?? u.role} onChange={e => setEditData(p => ({ ...p, role: e.target.value }))}>
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                        <option value="pending">Pending</option>
+                      </select>
+                    ) : <span style={S.roleBadge(u.role)}>{u.role}</span>}
+                  </td>
+                  <td style={S.td}>
+                    {editId === u.id ? (
+                      <span style={{ display: "flex", gap: 4 }}>
+                        <button style={S.btnSuccess} onClick={() => saveEdit(u.id)}>Save</button>
+                        <button style={S.btnGray} onClick={() => { setEditId(null); setEditData({}); }}>Cancel</button>
+                      </span>
+                    ) : (
+                      <span style={{ display: "flex", gap: 4 }}>
+                        <button style={S.btnGray} onClick={() => { setEditId(u.id); setEditData({}); }}>Edit</button>
+                        {u.id !== currentUser.id && (
+                          <button style={S.btnDanger} onClick={() => deleteUser(u.id)}>Delete</button>
+                        )}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main App Shell ───────────────────────────────────────────────────────────
+function MainApp({ user, onLogout }) {
+  const isAdmin = user.role === "admin";
+  const tabs = [
+    { id: "inventory",    label: "Inventory",          show: true },
+    { id: "log-admin",    label: "Log Administration", show: true },
+    { id: "pending",      label: "Pending",            show: isAdmin },
+    { id: "admin-log",    label: "Admin Log",          show: true },
+    { id: "purchases",    label: "Purchases",          show: isAdmin },
+    { id: "transfers",    label: "Transfers",          show: true },
+    { id: "waste",        label: "Waste",              show: true },
+    { id: "audits",       label: "Audits",             show: true },
+    { id: "monthly-logs", label: "Monthly Logs",       show: isAdmin },
+    { id: "users",        label: "Users",              show: isAdmin },
+  ].filter(t => t.show);
+
+  const [tab, setTab] = useState("inventory");
+
+  const renderTab = () => {
+    switch (tab) {
+      case "inventory":    return <InventoryTab user={user} />;
+      case "log-admin":    return <LogAdminTab  user={user} />;
+      case "pending":      return <PendingTab />;
+      case "admin-log":    return <AdminLogTab  user={user} />;
+      case "purchases":    return <PurchasesTab />;
+      case "transfers":    return <TransfersTab user={user} />;
+      case "waste":        return <WasteTab     user={user} />;
+      case "audits":       return <AuditsTab    user={user} />;
+      case "monthly-logs": return <MonthlyLogsTab user={user} />;
+      case "users":        return <UsersTab currentUser={user} />;
+      default:             return null;
+    }
+  };
+
+  return (
+    <div style={S.app}>
+      <nav style={S.nav}>
+        <span style={S.navTitle}>🚑 NarcTrack EMS</span>
+        {tabs.map(t => (
+          <button key={t.id} style={S.navTab(tab === t.id)} onClick={() => setTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+        <div style={S.navUser}>
+          <span>{user.name} · <span style={{ color: isAdmin ? "#818cf8" : "#38bdf8" }}>{user.role}</span></span>
+          <button style={S.logoutBtn} onClick={onLogout}>Sign Out</button>
+        </div>
+      </nav>
+      {renderTab()}
+    </div>
+  );
+}
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [user, setUser] = useState(() => {
+    const token = getToken();
+    if (!token) return null;
+    const decoded = decodeJwt(token);
+    if (!decoded || decoded.exp * 1000 < Date.now()) { clearToken(); return null; }
+    return decoded;
+  });
+
+  const handleLogin  = decoded => setUser(decoded);
+  const handleLogout = ()      => { clearToken(); setUser(null); };
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/auth-callback" element={<AuthCallback />} />
+        <Route path="/login" element={
+          user ? <Navigate to="/" replace /> : <LoginPage onLogin={handleLogin} />
+        } />
+        <Route path="/" element={
+          user ? <MainApp user={user} onLogout={handleLogout} /> : <Navigate to="/login" replace />
+        } />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}
