@@ -20,6 +20,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// ─── Auto-migration: add columns introduced after initial schema ───────────────
+pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar TEXT").catch(() => {});
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(express.json());
@@ -143,9 +146,75 @@ app.post("/api/auth/refresh", auth, async (req, res) => {
 });
 
 // ─── USERS ────────────────────────────────────────────────────────────────────
+
+// Own profile — any authenticated user
+app.get("/api/users/me", auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, username, email, name, badge, role, avatar,
+              (password_hash IS NOT NULL) AS has_password
+       FROM users WHERE id=$1`,
+      [req.user.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "User not found" });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update own profile — password change and/or avatar
+app.patch("/api/users/me", auth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmNewPassword, avatar } = req.body;
+    const updates = [];
+    const params  = [];
+
+    if (newPassword !== undefined) {
+      if (newPassword.length < 8)
+        return res.status(400).json({ error: "New password must be at least 8 characters" });
+      if (newPassword !== confirmNewPassword)
+        return res.status(400).json({ error: "Passwords do not match" });
+
+      const { rows } = await pool.query(
+        "SELECT password_hash FROM users WHERE id=$1", [req.user.id]
+      );
+      // If account already has a password, require current password to change it
+      if (rows[0]?.password_hash) {
+        if (!currentPassword)
+          return res.status(400).json({ error: "Current password required" });
+        const valid = await bcrypt.compare(currentPassword, rows[0].password_hash);
+        if (!valid)
+          return res.status(401).json({ error: "Current password is incorrect" });
+      }
+      // Google-only users (no password_hash) can set their first password freely
+      params.push(await bcrypt.hash(newPassword, 12));
+      updates.push(`password_hash=$${params.length}`);
+    }
+
+    if (avatar !== undefined) {
+      params.push(avatar); // null clears it
+      updates.push(`avatar=$${params.length}`);
+    }
+
+    if (updates.length === 0) return res.json({ ok: true });
+
+    params.push(req.user.id);
+    const { rows } = await pool.query(
+      `UPDATE users SET ${updates.join(", ")} WHERE id=$${params.length}
+       RETURNING id, username, email, name, badge, role, avatar`,
+      params
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// All users list (admin only)
 app.get("/api/users", auth, adminOnly, async (req, res) => {
   const { rows } = await pool.query(
-    "SELECT id, username, email, name, badge, role, created_at FROM users ORDER BY name"
+    "SELECT id, username, email, name, badge, role, avatar, created_at FROM users ORDER BY name"
   );
   res.json(rows);
 });
@@ -168,15 +237,25 @@ app.post("/api/users", auth, adminOnly, async (req, res) => {
 
 app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
   try {
-    const { role, badge, name } = req.body;
+    const { role, badge, name, username, email } = req.body;
     const { rows } = await pool.query(
-      `UPDATE users SET role=COALESCE($1,role), badge=COALESCE($2,badge), name=COALESCE($3,name)
-       WHERE id=$4 RETURNING id, username, email, name, badge, role`,
-      [role, badge, name, req.params.id]
+      `UPDATE users SET
+         role     = COALESCE($1, role),
+         badge    = COALESCE($2, badge),
+         name     = COALESCE($3, name),
+         username = COALESCE($4, username),
+         email    = COALESCE($5, email)
+       WHERE id=$6 RETURNING id, username, email, name, badge, role`,
+      [role, badge, name,
+       username ? username.toLowerCase() : null,
+       email    ? email.toLowerCase()    : null,
+       req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "User not found" });
     res.json(rows[0]);
   } catch (err) {
+    if (err.code === "23505")
+      return res.status(409).json({ error: "Username or email already exists" });
     res.status(500).json({ error: err.message });
   }
 });
@@ -252,10 +331,25 @@ app.get("/api/pending", auth, adminOnly, async (req, res) => {
 
 // User submits administration → deducts inventory, creates pending record
 app.post("/api/pending", auth, async (req, res) => {
+  const d = req.body;
+
+  // Non-admin users must confirm their password on every administration
+  if (req.user.role !== "admin") {
+    if (!d.confirmPassword)
+      return res.status(400).json({ error: "Password confirmation is required to administer medication." });
+    const { rows: ur } = await pool.query(
+      "SELECT password_hash FROM users WHERE id=$1", [req.user.id]
+    );
+    if (!ur[0]?.password_hash)
+      return res.status(400).json({ error: "No password set. Please set a password in your Profile tab before administering medications." });
+    const ok = await bcrypt.compare(d.confirmPassword, ur[0].password_hash);
+    if (!ok)
+      return res.status(401).json({ error: "Incorrect password. Administration not recorded." });
+  }
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const d = req.body;
 
     // Check inventory availability first
     const { rows: inv } = await client.query(

@@ -198,6 +198,28 @@ function LoginPage({ onLogin }) {
   );
 }
 
+// ─── Client-side image resize (canvas → JPEG base64, max 200×200 px) ─────────
+function resizeImage(file, maxPx = 200) {
+  return new Promise((resolve, reject) => {
+    const img    = new Image();
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload  = e => {
+      img.onerror = reject;
+      img.onload  = () => {
+        const scale  = Math.min(maxPx / img.width, maxPx / img.height, 1);
+        const canvas = document.createElement("canvas");
+        canvas.width  = Math.round(img.width  * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // ─── mg/mcg/g → mL calculator ────────────────────────────────────────────────
 // concStr format: "10mg/mL", "0.4mg/mL", "500mcg/mL", "1g/mL", etc.
 function calcML(doseAmount, doseUnit, concStr) {
@@ -334,6 +356,7 @@ function LogAdminTab({ user }) {
     providerNum: user.badge || "", providerName: user.name || "",
     mdName: "", mdSig: "", receivingHospital: "", hospitalRecordNum: "",
     witness: "", wasteAmt: "", wasteWitness: "", wasteReason: "",
+    confirmPassword: "",
   });
   const [form, setForm] = useState(blank);
   const [inv,  setInv ] = useState({});
@@ -463,6 +486,26 @@ function LogAdminTab({ user }) {
           <label style={S.label}>Waste Amount (mL)<input style={S.input} type="number" min="0" step="0.01" value={form.wasteAmt} onChange={e => setForm(p => ({ ...p, wasteAmt: e.target.value }))} /></label>
           <label style={S.label}>Waste Witness<input style={S.input} value={form.wasteWitness} onChange={e => setForm(p => ({ ...p, wasteWitness: e.target.value }))} /></label>
           <label style={S.label}>Waste Reason<input style={S.input} value={form.wasteReason} onChange={e => setForm(p => ({ ...p, wasteReason: e.target.value }))} /></label>
+
+          {/* Password confirmation — required for non-admin users (§80.136 compliance) */}
+          {user.role !== "admin" && (
+            <label style={{ ...S.label, gridColumn: "1/-1",
+              background: "#fef9c3", border: "1px solid #fde047",
+              borderRadius: 6, padding: "12px 14px" }}>
+              <span style={{ fontWeight: 600, color: "#854d0e" }}>
+                🔐 Confirm Your Identity — Enter Your Password to Submit
+              </span>
+              <input
+                style={{ ...S.input, marginTop: 6, border: "1px solid #fde047" }}
+                type="password"
+                value={form.confirmPassword}
+                onChange={e => setForm(p => ({ ...p, confirmPassword: e.target.value }))}
+                placeholder="Your NarcTrack password"
+                autoComplete="current-password"
+                required
+              />
+            </label>
+          )}
 
           <div style={{ gridColumn: "1/-1", display: "flex", alignItems: "center", gap: 12 }}>
             <button style={S.btnPrimary} type="submit" disabled={busy || mlCalc === null}>
@@ -1343,48 +1386,65 @@ function UsersTab({ currentUser }) {
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
-            <thead><tr>{["Name","Username","Email","Badge","Role","Actions"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{["","Name","Username","Email","Badge","Role","Actions"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
-              {users.map(u => (
-                <tr key={u.id}>
-                  <td style={S.td}>
-                    {editId === u.id
-                      ? <input style={{ ...S.input, width: 130 }} value={editData.name ?? u.name} onChange={e => setEditData(p => ({ ...p, name: e.target.value }))} />
-                      : u.name}
-                  </td>
-                  <td style={S.td}>{u.username}</td>
-                  <td style={S.td}>{u.email}</td>
-                  <td style={S.td}>
-                    {editId === u.id
-                      ? <input style={{ ...S.input, width: 80 }} value={editData.badge ?? u.badge} onChange={e => setEditData(p => ({ ...p, badge: e.target.value }))} />
-                      : u.badge}
-                  </td>
-                  <td style={S.td}>
-                    {editId === u.id ? (
-                      <select style={S.select} value={editData.role ?? u.role} onChange={e => setEditData(p => ({ ...p, role: e.target.value }))}>
-                        <option value="user">User</option>
-                        <option value="admin">Admin</option>
-                        <option value="pending">Pending</option>
-                      </select>
-                    ) : <span style={S.roleBadge(u.role)}>{u.role}</span>}
-                  </td>
-                  <td style={S.td}>
-                    {editId === u.id ? (
-                      <span style={{ display: "flex", gap: 4 }}>
-                        <button style={S.btnSuccess} onClick={() => saveEdit(u.id)}>Save</button>
-                        <button style={S.btnGray} onClick={() => { setEditId(null); setEditData({}); }}>Cancel</button>
-                      </span>
-                    ) : (
-                      <span style={{ display: "flex", gap: 4 }}>
-                        <button style={S.btnGray} onClick={() => { setEditId(u.id); setEditData({}); }}>Edit</button>
-                        {u.id !== currentUser.id && (
-                          <button style={S.btnDanger} onClick={() => deleteUser(u.id)}>Delete</button>
-                        )}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {users.map(u => {
+                const initials = (u.name || "?").split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
+                return (
+                  <tr key={u.id}>
+                    <td style={{ ...S.td, width: 40 }}>
+                      {u.avatar
+                        ? <img src={u.avatar} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover" }} />
+                        : <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: "#fff", fontWeight: 700 }}>{initials}</div>
+                      }
+                    </td>
+                    <td style={S.td}>
+                      {editId === u.id
+                        ? <input style={{ ...S.input, width: 130 }} value={editData.name ?? u.name} onChange={e => setEditData(p => ({ ...p, name: e.target.value }))} />
+                        : u.name}
+                    </td>
+                    <td style={S.td}>
+                      {editId === u.id
+                        ? <input style={{ ...S.input, width: 110 }} value={editData.username ?? u.username} onChange={e => setEditData(p => ({ ...p, username: e.target.value }))} />
+                        : u.username}
+                    </td>
+                    <td style={S.td}>
+                      {editId === u.id
+                        ? <input style={{ ...S.input, width: 160 }} type="email" value={editData.email ?? u.email} onChange={e => setEditData(p => ({ ...p, email: e.target.value }))} />
+                        : u.email}
+                    </td>
+                    <td style={S.td}>
+                      {editId === u.id
+                        ? <input style={{ ...S.input, width: 80 }} value={editData.badge ?? u.badge} onChange={e => setEditData(p => ({ ...p, badge: e.target.value }))} />
+                        : u.badge}
+                    </td>
+                    <td style={S.td}>
+                      {editId === u.id ? (
+                        <select style={S.select} value={editData.role ?? u.role} onChange={e => setEditData(p => ({ ...p, role: e.target.value }))}>
+                          <option value="user">User</option>
+                          <option value="admin">Admin</option>
+                          <option value="pending">Pending</option>
+                        </select>
+                      ) : <span style={S.roleBadge(u.role)}>{u.role}</span>}
+                    </td>
+                    <td style={S.td}>
+                      {editId === u.id ? (
+                        <span style={{ display: "flex", gap: 4 }}>
+                          <button style={S.btnSuccess} onClick={() => saveEdit(u.id)}>Save</button>
+                          <button style={S.btnGray} onClick={() => { setEditId(null); setEditData({}); }}>Cancel</button>
+                        </span>
+                      ) : (
+                        <span style={{ display: "flex", gap: 4 }}>
+                          <button style={S.btnGray} onClick={() => { setEditId(u.id); setEditData({}); }}>Edit</button>
+                          {u.id !== currentUser.id && (
+                            <button style={S.btnDanger} onClick={() => deleteUser(u.id)}>Delete</button>
+                          )}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1393,11 +1453,200 @@ function UsersTab({ currentUser }) {
   );
 }
 
+// ─── Nav avatar (fetches latest avatar on mount) ─────────────────────────────
+function NavAvatar({ user }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    api("/api/users/me").then(u => setSrc(u.avatar || null)).catch(() => {});
+  }, []);
+  const initials = (user.name || "?").split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
+  if (src) return <img src={src} alt="" style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", border: "2px solid #475569" }} />;
+  return <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff" }}>{initials}</div>;
+}
+
+// ─── Profile Tab — available to all users ─────────────────────────────────────
+function ProfileTab({ user }) {
+  const [profile,     setProfile    ] = useState(null);
+  const [loading,     setLoading    ] = useState(true);
+  const [err,         setErr        ] = useState("");
+  const [msg,         setMsg        ] = useState("");
+  const [pw,          setPw         ] = useState({ current: "", newPw: "", confirm: "" });
+  const [pwBusy,      setPwBusy     ] = useState(false);
+  const [pwErr,       setPwErr      ] = useState("");
+  const [pwMsg,       setPwMsg      ] = useState("");
+  const [avatarBusy,  setAvatarBusy ] = useState(false);
+
+  useEffect(() => {
+    api("/api/users/me")
+      .then(setProfile)
+      .catch(ex => setErr(ex.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // ── Avatar upload ──
+  async function onAvatarChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setErr("Please select an image file."); return; }
+    setAvatarBusy(true); setErr(""); setMsg("");
+    try {
+      const dataUrl = await resizeImage(file, 200);
+      await api("/api/users/me", { method: "PATCH", body: JSON.stringify({ avatar: dataUrl }) });
+      setProfile(p => ({ ...p, avatar: dataUrl }));
+      setMsg("Profile picture updated.");
+    } catch (ex) { setErr(ex.message); }
+    finally { setAvatarBusy(false); e.target.value = ""; }
+  }
+
+  async function removeAvatar() {
+    setErr(""); setMsg("");
+    try {
+      await api("/api/users/me", { method: "PATCH", body: JSON.stringify({ avatar: null }) });
+      setProfile(p => ({ ...p, avatar: null }));
+      setMsg("Profile picture removed.");
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  // ── Password change ──
+  async function savePassword(e) {
+    e.preventDefault();
+    setPwErr(""); setPwMsg("");
+    if (pw.newPw !== pw.confirm) { setPwErr("New passwords do not match."); return; }
+    if (pw.newPw.length < 8)    { setPwErr("New password must be at least 8 characters."); return; }
+    setPwBusy(true);
+    try {
+      await api("/api/users/me", { method: "PATCH", body: JSON.stringify({
+        currentPassword:    pw.current,
+        newPassword:        pw.newPw,
+        confirmNewPassword: pw.confirm,
+      })});
+      setPwMsg("Password updated successfully. Use it next time you administer a medication.");
+      setPw({ current: "", newPw: "", confirm: "" });
+    } catch (ex) { setPwErr(ex.message); }
+    finally { setPwBusy(false); }
+  }
+
+  if (loading) return <div style={S.loading}>Loading profile…</div>;
+
+  const initials = (profile?.name || user.name || "?")
+    .split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
+
+  const roStyle = { ...S.input, background: "#f1f5f9", color: "#64748b", cursor: "default" };
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>My Profile</h2>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+
+      {/* ── Avatar ── */}
+      <div style={S.card}>
+        <h3 style={S.h3}>Profile Picture</h3>
+        <div style={{ display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
+          {profile?.avatar
+            ? <img src={profile.avatar} alt="avatar"
+                style={{ width: 90, height: 90, borderRadius: "50%", objectFit: "cover", border: "3px solid #e2e8f0", flexShrink: 0 }} />
+            : <div style={{ width: 90, height: 90, borderRadius: "50%", background: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, fontWeight: 700, color: "#fff", flexShrink: 0 }}>
+                {initials}
+              </div>
+          }
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <label style={{ ...S.btnPrimary, cursor: "pointer", userSelect: "none" }}>
+              {avatarBusy ? "Uploading…" : "📷 Upload Photo"}
+              <input type="file" accept="image/*" style={{ display: "none" }}
+                onChange={onAvatarChange} disabled={avatarBusy} />
+            </label>
+            {profile?.avatar && (
+              <button style={{ ...S.btn, background: "#e2e8f0", color: "#475569" }} onClick={removeAvatar}>
+                Remove Photo
+              </button>
+            )}
+            <span style={{ fontSize: 11, color: "#94a3b8" }}>
+              JPG, PNG, GIF — auto-resized to 200×200 px
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Account info (read-only for non-admin) ── */}
+      <div style={S.card}>
+        <h3 style={S.h3}>Account Information</h3>
+        <div style={S.form3}>
+          <label style={S.label}>Full Name<input style={roStyle} value={profile?.name || ""} readOnly /></label>
+          <label style={S.label}>
+            Username
+            {user.role !== "admin" && <span style={{ color: "#94a3b8", fontSize: 11, marginLeft: 4 }}>· admin editable</span>}
+            <input style={roStyle} value={profile?.username || ""} readOnly />
+          </label>
+          <label style={S.label}>
+            Email
+            {user.role !== "admin" && <span style={{ color: "#94a3b8", fontSize: 11, marginLeft: 4 }}>· admin editable</span>}
+            <input style={roStyle} value={profile?.email || ""} readOnly />
+          </label>
+          <label style={S.label}>
+            Badge #
+            {user.role !== "admin" && <span style={{ color: "#94a3b8", fontSize: 11, marginLeft: 4 }}>· admin editable</span>}
+            <input style={roStyle} value={profile?.badge || ""} readOnly />
+          </label>
+          <label style={S.label}>Role<input style={roStyle} value={profile?.role || ""} readOnly /></label>
+        </div>
+        {user.role !== "admin" && (
+          <p style={{ fontSize: 12, color: "#94a3b8", margin: "12px 0 0" }}>
+            Contact your administrator to update your name, username, email, or badge number.
+          </p>
+        )}
+      </div>
+
+      {/* ── Change password ── */}
+      <div style={S.card}>
+        <h3 style={S.h3}>
+          {profile?.has_password ? "Change Password" : "Set a Password"}
+        </h3>
+        {!profile?.has_password && (
+          <div style={{ ...S.okBox, marginBottom: 14 }}>
+            ⚠ You signed in with Google and have no local password yet.
+            Setting one is required to submit drug administration records.
+          </div>
+        )}
+        {pwErr && <div style={S.errBox}>{pwErr}</div>}
+        {pwMsg && <div style={S.okBox}>{pwMsg}</div>}
+        <form onSubmit={savePassword} style={S.form3}>
+          {profile?.has_password && (
+            <label style={S.label}>Current Password
+              <input style={S.input} type="password" value={pw.current}
+                onChange={e => setPw(p => ({ ...p, current: e.target.value }))}
+                autoComplete="current-password" required />
+            </label>
+          )}
+          <label style={S.label}>New Password
+            <input style={S.input} type="password" value={pw.newPw}
+              onChange={e => setPw(p => ({ ...p, newPw: e.target.value }))}
+              autoComplete="new-password" placeholder="Min. 8 characters" required />
+          </label>
+          <label style={S.label}>Confirm New Password
+            <input style={S.input} type="password" value={pw.confirm}
+              onChange={e => setPw(p => ({ ...p, confirm: e.target.value }))}
+              autoComplete="new-password" required />
+          </label>
+          <div style={{ gridColumn: "1/-1" }}>
+            <button style={S.btnPrimary} type="submit" disabled={pwBusy}>
+              {pwBusy ? "Saving…" : profile?.has_password ? "Update Password" : "Set Password"}
+            </button>
+          </div>
+        </form>
+        <p style={{ fontSize: 12, color: "#64748b", margin: "12px 0 0" }}>
+          🔐 Your password is required each time you submit a drug administration record (§80.136 compliance).
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App Shell ───────────────────────────────────────────────────────────
 function MainApp({ user, onLogout }) {
   const isAdmin = user.role === "admin";
   const tabs = [
-    { id: "inventory",    label: "Inventory",          show: true },
+    { id: "inventory",    label: "Inventory",          show: isAdmin },  // admin only — users cannot view/manage inventory
     { id: "log-admin",    label: "Log Administration", show: true },
     { id: "pending",      label: "Pending",            show: isAdmin },
     { id: "admin-log",    label: "Admin Log",          show: true },
@@ -1407,9 +1656,11 @@ function MainApp({ user, onLogout }) {
     { id: "audits",       label: "Audits",             show: true },
     { id: "monthly-logs", label: "Monthly Logs",       show: isAdmin },
     { id: "users",        label: "Users",              show: isAdmin },
+    { id: "profile",      label: "My Profile",         show: true },
   ].filter(t => t.show);
 
-  const [tab, setTab] = useState("inventory");
+  // Default tab: admin → inventory, user → log-admin
+  const [tab, setTab] = useState(isAdmin ? "inventory" : "log-admin");
 
   const renderTab = () => {
     switch (tab) {
@@ -1423,6 +1674,7 @@ function MainApp({ user, onLogout }) {
       case "audits":       return <AuditsTab    user={user} />;
       case "monthly-logs": return <MonthlyLogsTab user={user} />;
       case "users":        return <UsersTab currentUser={user} />;
+      case "profile":      return <ProfileTab user={user} />;
       default:             return null;
     }
   };
@@ -1437,6 +1689,7 @@ function MainApp({ user, onLogout }) {
           </button>
         ))}
         <div style={S.navUser}>
+          <NavAvatar user={user} />
           <span>{user.name} · <span style={{ color: isAdmin ? "#818cf8" : "#38bdf8" }}>{user.role}</span></span>
           <button style={S.logoutBtn} onClick={onLogout}>Sign Out</button>
         </div>
