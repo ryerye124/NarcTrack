@@ -3,6 +3,22 @@ NYS 10 NYCRR §80.136 Controlled Substance Management
 
 ---
 
+## [v1.3.0] — 2026-05-12 — User Profiles, Avatar Upload, Password Confirm on Administration
+
+### Features Added
+
+| Area | Detail |
+|---|---|
+| **My Profile tab** | Visible to all users. Shows account info (read-only for non-admin fields), avatar upload, and password change/set form. |
+| **Avatar upload** | File picker → client-side canvas resize to 200×200 JPEG at 82% quality → base64 stored in `users.avatar` TEXT column. Displayed in nav bar and Users tab list. |
+| **Password confirmation on administration** | Non-admin users must enter their password in a highlighted field before LogAdmin form submits. Backend verifies via bcrypt before opening the transaction. Admin users are exempt. |
+| **Google-only users: set password** | Users who signed in with Google (no `password_hash`) see a "Set a Password" form — no current password required for the initial set. Required to be able to submit drug administrations. |
+| **Inventory tab — admin only** | Non-admin users no longer see the Inventory tab. They land on Log Administration by default. |
+| **Admin: edit username + email** | Users tab inline editor now includes username and email fields. Backend handles unique constraint conflicts (409). |
+| **Auto-migration** | `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar TEXT` runs on every backend startup — no manual DB migration needed. |
+
+---
+
 ## [v1.2.1] — 2026-05-12 — Hotfix: Non-Admin Login 404
 
 ### Bugs Reported & Fixed
