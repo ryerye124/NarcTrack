@@ -2232,18 +2232,32 @@ function AgencyCard({ agency, expanded, onToggle, onSaved, onDelete, onErr }) {
 
 // ─── Sys Admin: All Users Panel ───────────────────────────────────────────────
 function SysAdminUsers() {
-  const [users,   setUsers  ] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [err,     setErr    ] = useState("");
-  const [msg,     setMsg    ] = useState("");
-  const [filter,  setFilter ] = useState("");
+  const [users,    setUsers   ] = useState([]);
+  const [agencies, setAgencies] = useState([]);
+  const [loading,  setLoading ] = useState(true);
+  const [err,      setErr     ] = useState("");
+  const [msg,      setMsg     ] = useState("");
+  const [filter,   setFilter  ] = useState("");
+  // expanded user id for the add-to-agency panel
+  const [expanded, setExpanded] = useState(null);
+  // per-expanded-user form state
+  const [addForm,  setAddForm ] = useState({ agency_id: "", role: "user", badge: "" });
 
   useEffect(() => {
-    api("/api/sysadmin/users")
-      .then(setUsers)
+    Promise.all([
+      api("/api/sysadmin/users"),
+      api("/api/sysadmin/agencies"),
+    ])
+      .then(([u, a]) => { setUsers(u); setAgencies(a); })
       .catch(ex => setErr(ex.message))
       .finally(() => setLoading(false));
   }, []);
+
+  function openExpand(userId) {
+    if (expanded === userId) { setExpanded(null); return; }
+    setExpanded(userId);
+    setAddForm({ agency_id: "", role: "user", badge: "" });
+  }
 
   async function toggleSysAdmin(u) {
     const isSys = u.global_role === "sysadmin";
@@ -2256,54 +2270,166 @@ function SysAdminUsers() {
     } catch (ex) { setErr(ex.message); }
   }
 
+  async function addToAgency(u) {
+    if (!addForm.agency_id) { setErr("Select an agency first."); return; }
+    try {
+      await api(`/api/sysadmin/agencies/${addForm.agency_id}/users`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: u.id, role: addForm.role, badge: addForm.badge || "UNASSIGNED" }),
+      });
+      const agName = agencies.find(a => String(a.id) === String(addForm.agency_id))?.name || addForm.agency_id;
+      const newMembership = { agency_id: addForm.agency_id, agency_name: agName, role: addForm.role, badge: addForm.badge || "UNASSIGNED" };
+      setUsers(prev => prev.map(x => {
+        if (x.id !== u.id) return x;
+        const filtered = (x.memberships || []).filter(m => String(m.agency_id) !== String(addForm.agency_id));
+        return { ...x, memberships: [...filtered, newMembership] };
+      }));
+      setMsg(`${u.name} added to ${agName}.`);
+      setAddForm({ agency_id: "", role: "user", badge: "" });
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function removeFromAgency(u, membership) {
+    if (!window.confirm(`Remove ${u.name} from ${membership.agency_name}?`)) return;
+    try {
+      await api(`/api/sysadmin/agencies/${membership.agency_id}/users/${u.id}`, { method: "DELETE" });
+      setUsers(prev => prev.map(x => x.id !== u.id ? x : {
+        ...x, memberships: (x.memberships || []).filter(m => String(m.agency_id) !== String(membership.agency_id)),
+      }));
+      setMsg(`${u.name} removed from ${membership.agency_name}.`);
+    } catch (ex) { setErr(ex.message); }
+  }
+
   const filtered = users.filter(u =>
     !filter || (u.name||"").toLowerCase().includes(filter.toLowerCase()) ||
     (u.email||"").toLowerCase().includes(filter.toLowerCase()) ||
     (u.username||"").toLowerCase().includes(filter.toLowerCase())
   );
 
+  const panelStyle = {
+    background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8,
+    padding: "14px 16px", marginTop: 8,
+  };
+  const chipStyle = {
+    display: "inline-flex", alignItems: "center", gap: 4,
+    marginRight: 4, marginBottom: 4,
+    padding: "2px 8px", borderRadius: 10, fontSize: 11,
+    background: "#ede9fe", color: "#6d28d9",
+  };
+
   return (
     <div>
       <h2 style={{ ...S.h2, marginBottom: 16 }}>All Users ({users.length})</h2>
-      {err && <div style={S.errBox}>{err}</div>}
-      {msg && <div style={S.okBox}>{msg}</div>}
+      {err && <div style={S.errBox}>{err} <button style={{ marginLeft: 8, fontSize: 11, cursor: "pointer" }} onClick={() => setErr("")}>✕</button></div>}
+      {msg && <div style={S.okBox}>{msg} <button style={{ marginLeft: 8, fontSize: 11, cursor: "pointer" }} onClick={() => setMsg("")}>✕</button></div>}
       <input style={{ ...S.input, maxWidth: 320, marginBottom: 16 }} placeholder="Filter by name / email…"
         value={filter} onChange={e => setFilter(e.target.value)} />
       {loading ? <div style={S.loading}>Loading…</div> : (
-        <div style={S.card}>
-          <table style={S.tbl}>
-            <thead><tr>{["Name","Username","Email","Agencies","Sys Admin","Actions"].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
-            <tbody>
-              {filtered.map(u => (
-                <tr key={u.id}>
-                  <td style={S.td}><strong>{u.name||"—"}</strong></td>
-                  <td style={S.td}>{u.username||"—"}</td>
-                  <td style={S.td}>{u.email||"—"}</td>
-                  <td style={S.td}>
-                    {(u.memberships||[]).map(m => (
-                      <span key={m.agency_id} style={{ display: "inline-block", marginRight: 4, marginBottom: 2,
-                                                       padding: "1px 6px", borderRadius: 10, fontSize: 11,
-                                                       background: "#ede9fe", color: "#6d28d9" }}>
-                        {m.agency_name} · {m.role}
-                      </span>
-                    ))}
-                    {(!u.memberships || u.memberships.length === 0) && <span style={{ color: "#94a3b8", fontSize: 11 }}>No agencies</span>}
-                  </td>
-                  <td style={S.td}>
-                    {u.global_role === "sysadmin"
-                      ? <span style={{ color: "#6366f1", fontWeight: 700 }}>🛡️ Yes</span>
-                      : <span style={{ color: "#94a3b8" }}>—</span>}
-                  </td>
-                  <td style={S.td}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {filtered.map(u => (
+            <div key={u.id} style={{ ...S.card, padding: 0, overflow: "hidden" }}>
+              {/* ── Header row ── */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
+                            flexWrap: "wrap", cursor: "pointer" }}
+                   onClick={() => openExpand(u.id)}>
+                {/* Avatar placeholder */}
+                <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#818cf8",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              color: "#fff", fontWeight: 700, fontSize: 15, flexShrink: 0 }}>
+                  {(u.name || u.username || "?")[0].toUpperCase()}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{u.name || "—"}</div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>{u.email || u.username || "—"}</div>
+                </div>
+                {/* Agency chips */}
+                <div style={{ flex: 2, minWidth: 180, display: "flex", flexWrap: "wrap" }}>
+                  {(u.memberships||[]).length === 0
+                    ? <span style={{ fontSize: 11, color: "#94a3b8" }}>No agencies</span>
+                    : (u.memberships||[]).map(m => (
+                        <span key={m.agency_id} style={chipStyle}>
+                          {m.agency_name} · {m.role}
+                        </span>
+                      ))
+                  }
+                </div>
+                {/* Sysadmin badge */}
+                {u.global_role === "sysadmin" && (
+                  <span style={{ fontSize: 12, color: "#6366f1", fontWeight: 700, whiteSpace: "nowrap" }}>🛡️ Sysadmin</span>
+                )}
+                {/* Expand chevron */}
+                <span style={{ fontSize: 16, color: "#94a3b8", marginLeft: "auto", userSelect: "none" }}>
+                  {expanded === u.id ? "▲" : "▼"}
+                </span>
+              </div>
+
+              {/* ── Expanded panel ── */}
+              {expanded === u.id && (
+                <div style={{ borderTop: "1px solid #e2e8f0", padding: "14px 16px" }}>
+                  {/* Current memberships with remove */}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 6 }}>Agency Memberships</div>
+                    {(u.memberships||[]).length === 0
+                      ? <span style={{ fontSize: 12, color: "#94a3b8" }}>Not assigned to any agency.</span>
+                      : (u.memberships||[]).map(m => (
+                          <div key={m.agency_id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                            <span style={{ ...chipStyle, margin: 0 }}>{m.agency_name}</span>
+                            <span style={{ fontSize: 11, color: "#64748b" }}>Role: <strong>{m.role}</strong></span>
+                            <span style={{ fontSize: 11, color: "#64748b" }}>Badge: <strong>{m.badge}</strong></span>
+                            <button style={{ ...S.btnDanger, fontSize: 11, padding: "2px 8px", marginLeft: 4 }}
+                              onClick={() => removeFromAgency(u, m)}>Remove</button>
+                          </div>
+                        ))
+                    }
+                  </div>
+
+                  {/* Add to agency form */}
+                  <div style={panelStyle}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>➕ Add to Agency</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      <div>
+                        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Agency</div>
+                        <select style={{ ...S.input, minWidth: 160 }} value={addForm.agency_id}
+                          onChange={e => setAddForm(f => ({ ...f, agency_id: e.target.value }))}>
+                          <option value="">— select —</option>
+                          {agencies
+                            .filter(a => !(u.memberships||[]).some(m => String(m.agency_id) === String(a.id)))
+                            .map(a => <option key={a.id} value={a.id}>{a.name}</option>)
+                          }
+                        </select>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Role</div>
+                        <select style={{ ...S.input, minWidth: 100 }} value={addForm.role}
+                          onChange={e => setAddForm(f => ({ ...f, role: e.target.value }))}>
+                          <option value="user">User</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Badge #</div>
+                        <input style={{ ...S.input, width: 100 }} placeholder="e.g. 929"
+                          value={addForm.badge}
+                          onChange={e => setAddForm(f => ({ ...f, badge: e.target.value }))} />
+                      </div>
+                      <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }}
+                        onClick={() => addToAgency(u)}>Add to Agency</button>
+                    </div>
+                  </div>
+
+                  {/* Sysadmin toggle */}
+                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 10 }}>
                     <button style={u.global_role === "sysadmin" ? S.btnDanger : S.btnGray}
-                      onClick={() => toggleSysAdmin(u)} title={u.global_role === "sysadmin" ? "Remove sysadmin" : "Grant sysadmin"}>
-                      {u.global_role === "sysadmin" ? "Revoke 🛡️" : "Grant 🛡️"}
+                      onClick={() => toggleSysAdmin(u)}>
+                      {u.global_role === "sysadmin" ? "Revoke Sysadmin 🛡️" : "Grant Sysadmin 🛡️"}
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <span style={{ fontSize: 11, color: "#94a3b8" }}>Sysadmin bypasses all agency restrictions.</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {filtered.length === 0 && <div style={{ color: "#94a3b8", fontSize: 13 }}>No users match your filter.</div>}
         </div>
       )}
     </div>

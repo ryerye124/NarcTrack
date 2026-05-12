@@ -1211,6 +1211,38 @@ app.patch("/api/sysadmin/users/:id", auth, sysAdminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Add existing user to any agency (sysadmin)
+app.post("/api/sysadmin/agencies/:agencyId/users", auth, sysAdminOnly, async (req, res) => {
+  try {
+    const { user_id, role, badge } = req.body;
+    if (!user_id) return res.status(400).json({ error: "user_id is required" });
+    // Verify user exists
+    const { rows: [u] } = await pool.query("SELECT id, name FROM users WHERE id=$1", [user_id]);
+    if (!u) return res.status(404).json({ error: "User not found" });
+    // Verify agency exists
+    const { rows: [ag] } = await pool.query("SELECT id FROM agencies WHERE id=$1", [req.params.agencyId]);
+    if (!ag) return res.status(404).json({ error: "Agency not found" });
+    await pool.query(
+      `INSERT INTO user_agencies (user_id, agency_id, role, badge)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (user_id, agency_id) DO UPDATE SET role=$3, badge=$4`,
+      [user_id, req.params.agencyId, role || "user", badge || "UNASSIGNED"]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Remove user from any agency (sysadmin)
+app.delete("/api/sysadmin/agencies/:agencyId/users/:userId", auth, sysAdminOnly, async (req, res) => {
+  try {
+    await pool.query(
+      "DELETE FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
+      [req.params.userId, req.params.agencyId]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get("/api/health", (req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
