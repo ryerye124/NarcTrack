@@ -25,7 +25,7 @@ pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar TEXT").catch(() =>
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: "10mb" })); // 10 MB — needed for base64 avatar uploads
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
