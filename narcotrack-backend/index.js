@@ -322,7 +322,6 @@ app.post("/api/login", async (req, res) => {
   try {
     const { username, password, agency_id } = req.body;
     if (!username || !password) return res.status(400).json({ error: "Missing credentials" });
-    if (!agency_id)             return res.status(400).json({ error: "Agency selection required" });
 
     // Step 1 — find user globally (not scoped to an agency)
     const { rows: [user] } = await pool.query(
@@ -337,6 +336,9 @@ app.post("/api/login", async (req, res) => {
     // System admin — no agency required
     if (user.global_role === "sysadmin")
       return res.json({ token: issueSysAdminToken(user), role: "sysadmin" });
+
+    // Agency users must select an agency
+    if (!agency_id) return res.status(400).json({ error: "Please select an agency." });
 
     // Step 2 — check agency membership
     const { rows: [membership] } = await pool.query(
