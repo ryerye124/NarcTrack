@@ -37,6 +37,14 @@ if [ ! -f "$BACKEND/.railway" ] && ! railway status --path "$BACKEND" &>/dev/nul
   echo ""
 fi
 
+# ── Build frontend ────────────────────────────────────────────────────────────
+
+echo -e "${GREEN}Building frontend...${NC}"
+cd "$FRONTEND"
+npm install --silent
+npm run build 2>&1 | sed 's/^/[Build]   /'
+echo ""
+
 # ── Deploy in parallel ─────────────────────────────────────────────────────────
 
 echo -e "${GREEN}Deploying frontend + backend in parallel...${NC}"
@@ -45,10 +53,10 @@ echo ""
 FRONTEND_LOG=$(mktemp)
 BACKEND_LOG=$(mktemp)
 
-# Frontend — Vercel prod deploy
+# Frontend — deploy pre-built dist/ to Vercel
 (
   cd "$FRONTEND"
-  vercel deploy --prod --yes 2>&1 | tee "$FRONTEND_LOG" | sed 's/^/[Vercel]  /'
+  vercel deploy --prod --yes --prebuilt 2>&1 | tee "$FRONTEND_LOG" | sed 's/^/[Vercel]  /'
 ) &
 FRONTEND_PID=$!
 
