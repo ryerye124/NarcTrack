@@ -611,12 +611,13 @@ function LogAdminTab({ user, onStockChange }) {
 }
 
 // ─── Pending Verifications Tab (admin) ────────────────────────────────────────
-function PendingTab({ onStockChange }) {
-  const [records,   setRecords  ] = useState([]);
-  const [loading,   setLoading  ] = useState(true);
-  const [err,       setErr      ] = useState("");
-  const [noteMap,   setNoteMap  ] = useState({});
-  const [reasonMap, setReasonMap] = useState({});
+function PendingTab({ onStockChange, user, onNavigate }) {
+  const [records,       setRecords      ] = useState([]);
+  const [loading,       setLoading      ] = useState(true);
+  const [err,           setErr          ] = useState("");
+  const [noteMap,       setNoteMap      ] = useState({});
+  const [reasonMap,     setReasonMap    ] = useState({});
+  const [restockTarget, setRestockTarget] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -626,11 +627,15 @@ function PendingTab({ onStockChange }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  async function verify(id) {
+  async function verify(record) {
     try {
-      await api(`/api/pending/${id}/verify`, { method: "POST", body: JSON.stringify({ note: noteMap[id] || "" }) });
+      await api(`/api/pending/${record.id}/verify`, {
+        method: "POST",
+        body: JSON.stringify({ note: noteMap[record.id] || "" }),
+      });
       onStockChange?.();
       load();
+      setRestockTarget(record);
     } catch (ex) { setErr(ex.message); }
   }
 
@@ -648,7 +653,19 @@ function PendingTab({ onStockChange }) {
     <div style={S.page}>
       <h2 style={S.h2}>Pending Verifications ({records.length})</h2>
       {err && <div style={S.errBox}>{err}</div>}
-      {records.length === 0 && <div style={S.card}><p style={{ color: "#64748b", margin: 0 }}>No pending records.</p></div>}
+
+      {restockTarget && (
+        <RestockPanel
+          record={restockTarget}
+          user={user}
+          onDone={() => { setRestockTarget(null); onStockChange?.(); }}
+          onNavigate={onNavigate}
+        />
+      )}
+
+      {records.length === 0 && !restockTarget && (
+        <div style={S.card}><p style={{ color: "#64748b", margin: 0 }}>No pending records.</p></div>
+      )}
       {records.map(r => (
         <div key={r.id} style={S.card}>
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
@@ -669,13 +686,122 @@ function PendingTab({ onStockChange }) {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <input style={{ ...S.input, flex: 1, minWidth: 160 }} placeholder="Verify note (optional)"
               value={noteMap[r.id] || ""} onChange={e => setNoteMap(p => ({ ...p, [r.id]: e.target.value }))} />
-            <button style={S.btnSuccess} onClick={() => verify(r.id)}>✓ Verify</button>
+            <button style={S.btnSuccess} onClick={() => verify(r)}>✓ Verify</button>
             <input style={{ ...S.input, flex: 1, minWidth: 180 }} placeholder="Rejection reason (required)"
               value={reasonMap[r.id] || ""} onChange={e => setReasonMap(p => ({ ...p, [r.id]: e.target.value }))} />
             <button style={S.btnDanger} onClick={() => reject(r.id)}>✕ Reject</button>
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Restock Panel — shown after verifying a pending administration ────────────
+function RestockPanel({ record, user, onDone, onNavigate }) {
+  const [qty,           setQty          ] = useState(String(record.dose_qty || ""));
+  const [transferredBy, setTransferredBy] = useState(user?.name || "");
+  const [witness,       setWitness      ] = useState("");
+  const [busy,          setBusy         ] = useState(false);
+  const [err,           setErr          ] = useState("");
+  const [done,          setDone         ] = useState(false);
+
+  async function logTransfer(e) {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      await api("/api/transfers", {
+        method: "POST",
+        body: JSON.stringify({
+          fromStock:     "Main Stock",
+          toStock:       record.stock,
+          drug:          record.drug,
+          conc:          record.conc,
+          unit:          "mL",
+          qty:           parseFloat(qty),
+          transferredBy,
+          witness,
+        }),
+      });
+      setDone(true);
+    } catch (ex) { setErr(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  if (done) {
+    return (
+      <div style={{ ...S.card, background: "#f0fdf4", border: "2px solid #86efac", marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: "#166534", marginBottom: 6 }}>
+          ✓ Restock logged — {record.drug} {record.conc}, {qty} mL → {record.stock}
+        </div>
+        <div style={{ fontSize: 13, color: "#166534", marginBottom: 14 }}>
+          Run {record.run_id} · {record.patient_name} · verified and restocked.
+          Now generate the DOH-4004 for this drug in the Exports tab.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={S.btnPrimary} onClick={() => onNavigate?.("exports")}>
+            Open DOH Exports → 4004
+          </button>
+          <button style={{ ...S.btnPrimary, background: "#64748b" }} onClick={onDone}>
+            Done
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...S.card, border: "2px solid #38bdf8", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#0369a1" }}>
+            Restock Sub-Stock
+          </div>
+          <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>
+            Verified: Run {record.run_id} · {record.patient_name} ·{" "}
+            <strong>{record.drug} {record.conc}</strong>, {record.dose_qty} mL from{" "}
+            <strong>{record.stock}</strong>
+          </div>
+        </div>
+        <button onClick={onDone}
+          style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>
+          ✕
+        </button>
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      <form onSubmit={logTransfer}>
+        <div style={S.form3}>
+          <label style={S.label}>From
+            <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value="Main Stock" readOnly />
+          </label>
+          <label style={S.label}>To
+            <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value={record.stock} readOnly />
+          </label>
+          <label style={S.label}>Drug
+            <input style={{ ...S.input, background: "#f1f5f9", color: "#64748b" }} value={`${record.drug} ${record.conc}`} readOnly />
+          </label>
+          <label style={S.label}>Qty to Transfer (mL)
+            <input style={S.input} type="number" min="0.01" step="0.01"
+              value={qty} onChange={e => setQty(e.target.value)} required />
+          </label>
+          <label style={S.label}>Transferred By
+            <input style={S.input} value={transferredBy}
+              onChange={e => setTransferredBy(e.target.value)} required />
+          </label>
+          <label style={S.label}>Witness
+            <input style={S.input} value={witness} placeholder="Required"
+              onChange={e => setWitness(e.target.value)} required />
+          </label>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <button style={S.btnPrimary} type="submit" disabled={busy}>
+            {busy ? "Logging…" : "Log Restock Transfer"}
+          </button>
+          <button type="button" style={{ ...S.btnPrimary, background: "#64748b" }} onClick={onDone}>
+            Skip
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -2708,7 +2834,7 @@ function MainApp({ user, onLogout }) {
     switch (tab) {
       case "inventory":    return <InventoryTab user={user} />;
       case "log-admin":    return <LogAdminTab  user={user} onStockChange={refreshAlerts} />;
-      case "pending":      return <PendingTab onStockChange={refreshAlerts} />;
+      case "pending":      return <PendingTab onStockChange={refreshAlerts} user={user} onNavigate={setTab} />;
       case "admin-log":    return <AdminLogTab  user={user} />;
       case "purchases":    return <PurchasesTab user={user} />;
       case "transfers":    return <TransfersTab user={user} />;
