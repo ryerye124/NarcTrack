@@ -2311,6 +2311,349 @@ function ExportsTab({ user }) {
   );
 }
 
+// ─── Weekly Round Wizard ──────────────────────────────────────────────────────
+function WeeklyRoundTab({ user }) {
+  const stocks = getStocks(user);
+
+  const [inv,        setInv       ] = useState({});
+  const [loading,    setLoading   ] = useState(true);
+  const [step,       setStep      ] = useState("start"); // "start" | 0..n | "review" | "done"
+  const [auditor,    setAuditor   ] = useState(user.name || "");
+  const [witness,    setWitness   ] = useState("");
+  const [roundNotes, setRoundNotes] = useState("");
+  const [results,    setResults   ] = useState({});    // { stockIdx: { drugId: {counted,seal,condition} } }
+  const [submitting, setSubmitting] = useState(false);
+  const [err,        setErr       ] = useState("");
+  const [savedCount, setSavedCount] = useState(0);
+  const [doneIssues, setDoneIssues] = useState([]);
+
+  useEffect(() => {
+    api("/api/inventory")
+      .then(data => {
+        setInv(data);
+        setResults(buildDefaults(stocks, data));
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  function buildDefaults(stocks, data) {
+    const defs = {};
+    stocks.forEach((stock, si) => {
+      defs[si] = {};
+      (data[stock] || []).forEach(d => {
+        defs[si][d.id] = { counted: String(d.qty), seal: "intact", condition: "good" };
+      });
+    });
+    return defs;
+  }
+
+  function setField(si, drugId, field, value) {
+    setResults(prev => ({
+      ...prev,
+      [si]: { ...prev[si], [drugId]: { ...prev[si]?.[drugId], [field]: value } },
+    }));
+  }
+
+  function collectIssues(resultsSnap) {
+    const issues = [];
+    stocks.forEach((stock, si) => {
+      (inv[stock] || []).forEach(d => {
+        const r = resultsSnap[si]?.[d.id];
+        if (!r) return;
+        const counted = parseFloat(r.counted);
+        if (!isNaN(counted) && counted !== parseFloat(d.qty))
+          issues.push({ stock, drug: d.drug, conc: d.conc, type: "count", expected: d.qty, counted });
+        if (r.seal !== "intact")
+          issues.push({ stock, drug: d.drug, conc: d.conc, type: "seal", value: r.seal });
+        if (r.condition !== "good")
+          issues.push({ stock, drug: d.drug, conc: d.conc, type: "condition", value: r.condition });
+      });
+    });
+    return issues;
+  }
+
+  async function completeRound() {
+    setSubmitting(true); setErr("");
+    try {
+      const dateLabel = new Date().toLocaleDateString("en-US");
+      await Promise.all(stocks.map((stock, si) => {
+        const drugs       = inv[stock] || [];
+        const stockResults = drugs.map(d => {
+          const r       = results[si]?.[d.id] || { counted: String(d.qty), seal: "intact", condition: "good" };
+          const counted = parseFloat(r.counted ?? d.qty);
+          return {
+            drug: d.drug, conc: d.conc, unit: d.unit,
+            expected: d.qty, counted,
+            match:     counted === parseFloat(d.qty),
+            seal:      r.seal      || "intact",
+            condition: r.condition || "good",
+          };
+        });
+        const note = [`Weekly Round — ${dateLabel}`, roundNotes].filter(Boolean).join(". ");
+        return api("/api/audits", {
+          method: "POST",
+          body:   JSON.stringify({ stock, auditor, witness, results: stockResults, notes: note }),
+        });
+      }));
+      const issues = collectIssues(results);
+      setSavedCount(stocks.length);
+      setDoneIssues(issues);
+      setStep("done");
+    } catch (ex) { setErr(ex.message); }
+    finally { setSubmitting(false); }
+  }
+
+  function resetWizard() {
+    setStep("start"); setWitness(""); setRoundNotes(""); setErr("");
+    setResults(buildDefaults(stocks, inv));
+  }
+
+  if (loading) return <div style={S.loading}>Loading inventory…</div>;
+
+  // ── Done ──────────────────────────────────────────────────────────────────────
+  if (step === "done") {
+    return (
+      <div style={S.page}>
+        <h2 style={S.h2}>Round Complete</h2>
+        <div style={{ ...S.card, background: "#f0fdf4", border: "1px solid #86efac", textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>✓</div>
+          <strong style={{ fontSize: 16 }}>{savedCount} audit records saved.</strong>
+          <p style={{ margin: "8px 0 0", fontSize: 13, color: "#166534" }}>
+            {doneIssues.length === 0
+              ? "No discrepancies or issues. All stocks clean."
+              : `${doneIssues.length} issue${doneIssues.length > 1 ? "s" : ""} noted and recorded.`}
+          </p>
+        </div>
+        {doneIssues.length > 0 && (
+          <div style={S.card}>
+            <h3 style={S.h3}>Issues Recorded</h3>
+            <table style={S.tbl}>
+              <thead><tr>{["Stock","Drug","Issue","Detail"].map(h => <th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <tbody>
+                {doneIssues.map((iss, i) => (
+                  <tr key={i}>
+                    <td style={S.td}>{iss.stock}</td>
+                    <td style={S.td}>{iss.drug} {iss.conc}</td>
+                    <td style={S.td}>
+                      <span style={S.pill(false)}>
+                        {iss.type === "count" ? "Count" : iss.type === "seal" ? "Seal" : "Condition"}
+                      </span>
+                    </td>
+                    <td style={S.td}>
+                      {iss.type === "count"
+                        ? `Expected ${iss.expected}, counted ${iss.counted}`
+                        : iss.value}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <button style={S.btnPrimary} onClick={resetWizard}>Start New Round</button>
+      </div>
+    );
+  }
+
+  // ── Review ────────────────────────────────────────────────────────────────────
+  if (step === "review") {
+    const issues = collectIssues(results);
+    return (
+      <div style={S.page}>
+        <h2 style={S.h2}>Review &amp; Complete</h2>
+        <p style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
+          Lead: <strong>{auditor}</strong> · Witness: <strong>{witness}</strong>
+        </p>
+        {err && <div style={S.errBox}>{err}</div>}
+        {stocks.map((stock, si) => {
+          const drugs       = inv[stock] || [];
+          const stockIssues = drugs.filter(d => {
+            const r = results[si]?.[d.id];
+            if (!r) return false;
+            const counted = parseFloat(r.counted);
+            return (!isNaN(counted) && counted !== parseFloat(d.qty))
+              || r.seal !== "intact" || r.condition !== "good";
+          });
+          return (
+            <div key={stock} style={{ ...S.card,
+              borderLeft: `4px solid ${stockIssues.length > 0 ? "#f59e0b" : "#22c55e"}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <strong style={{ fontSize: 15 }}>{stock}</strong>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={S.pill(stockIssues.length === 0)}>
+                    {stockIssues.length === 0 ? "All Clear" : `${stockIssues.length} Issue${stockIssues.length > 1 ? "s" : ""}`}
+                  </span>
+                  <button style={{ fontSize: 12, padding: "4px 10px", borderRadius: 4,
+                    border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", color: "#475569" }}
+                    onClick={() => setStep(si)}>Edit</button>
+                </div>
+              </div>
+              {stockIssues.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 13, color: "#92400e" }}>
+                  {stockIssues.map(d => d.drug).join(", ")}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div style={S.card}>
+          <label style={S.label}>Round Notes (optional)
+            <textarea style={S.textarea} value={roundNotes}
+              onChange={e => setRoundNotes(e.target.value)}
+              placeholder="Any additional observations for this round…" />
+          </label>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button style={{ ...S.btnPrimary, background: "#64748b" }}
+            onClick={() => setStep(stocks.length - 1)}>← Back</button>
+          <button style={S.btnPrimary} disabled={submitting} onClick={completeRound}>
+            {submitting ? "Saving…" : `Complete Round — Save ${stocks.length} Audits`}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Start ─────────────────────────────────────────────────────────────────────
+  if (step === "start") {
+    return (
+      <div style={S.page}>
+        <h2 style={S.h2}>Weekly Round</h2>
+        <p style={{ fontSize: 13, color: "#64748b", marginBottom: 20 }}>
+          Guided inspection of all {stocks.length} stock locations in one session.
+          Counts are pre-filled from the current inventory — only change what differs physically.
+          Completing the round saves one audit record per stock.
+        </p>
+        <div style={S.card}>
+          <h3 style={S.h3}>Round Details</h3>
+          <div style={S.form3}>
+            <label style={S.label}>Round Lead (Auditor)
+              <input style={S.input} value={auditor}
+                onChange={e => setAuditor(e.target.value)} />
+            </label>
+            <label style={S.label}>Witness
+              <input style={S.input} value={witness}
+                onChange={e => setWitness(e.target.value)} placeholder="Required" />
+            </label>
+          </div>
+          <button style={{ ...S.btnPrimary, marginTop: 16, opacity: (!auditor || !witness) ? 0.5 : 1 }}
+            disabled={!auditor || !witness}
+            onClick={() => setStep(0)}>
+            Begin Round — {stocks.length} Stocks →
+          </button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10 }}>
+          {stocks.map((s, i) => (
+            <div key={s} style={{ ...S.card, textAlign: "center", padding: 16 }}>
+              <div style={{ fontSize: 24, marginBottom: 4 }}>{i === 0 ? "🔒" : "🚑"}</div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{s}</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                {(inv[s] || []).length} drug{(inv[s] || []).length !== 1 ? "s" : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Stock inspection step ─────────────────────────────────────────────────────
+  const si    = step;
+  const stock = stocks[si];
+  const drugs = inv[stock] || [];
+  const isLast = si === stocks.length - 1;
+
+  return (
+    <div style={S.page}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+        <h2 style={{ ...S.h2, margin: 0 }}>{stock}</h2>
+        <span style={{ fontSize: 13, color: "#64748b" }}>Step {si + 1} of {stocks.length}</span>
+      </div>
+      <div style={{ height: 6, background: "#e2e8f0", borderRadius: 3, marginBottom: 20 }}>
+        <div style={{ height: "100%", borderRadius: 3, background: "#38bdf8",
+          width: `${((si + 1) / stocks.length) * 100}%`, transition: "width 0.3s" }} />
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      <div style={S.card}>
+        <p style={{ fontSize: 13, color: "#64748b", margin: "0 0 14px" }}>
+          Counts are pre-filled. Change only what differs from the physical safe.
+        </p>
+        <table style={S.tbl}>
+          <thead>
+            <tr>
+              {["Drug","Conc","Expected","Physical Count","Match","Seal","Condition"].map(h =>
+                <th key={h} style={S.th}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {drugs.length === 0 && (
+              <tr><td colSpan={7} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>
+                No drugs in this stock.
+              </td></tr>
+            )}
+            {drugs.map(d => {
+              const r      = results[si]?.[d.id] || { counted: String(d.qty), seal: "intact", condition: "good" };
+              const counted = parseFloat(r.counted);
+              const match  = !isNaN(counted) && counted === parseFloat(d.qty);
+              const sealOk = r.seal === "intact";
+              const condOk = r.condition === "good";
+              return (
+                <tr key={d.id} style={{ background: (r.counted !== "" && !match) || !sealOk || !condOk ? "#fff7ed" : "" }}>
+                  <td style={S.td}><strong>{d.drug}</strong></td>
+                  <td style={S.td}>{d.conc}</td>
+                  <td style={S.td}><strong>{d.qty}</strong> {d.unit}</td>
+                  <td style={S.td}>
+                    <input style={{ ...S.input, width: 80 }} type="number" min="0" step="0.01"
+                      value={r.counted}
+                      onChange={e => setField(si, d.id, "counted", e.target.value)} />
+                  </td>
+                  <td style={S.td}>
+                    {r.counted !== "" && <span style={S.pill(match)}>{match ? "✓" : "DISC"}</span>}
+                  </td>
+                  <td style={S.td}>
+                    <select style={{ ...S.select, width: 100,
+                      background: sealOk ? "#f0fdf4" : "#fef2f2",
+                      color:      sealOk ? "#166534" : "#dc2626" }}
+                      value={r.seal}
+                      onChange={e => setField(si, d.id, "seal", e.target.value)}>
+                      <option value="intact">Intact</option>
+                      <option value="broken">Broken</option>
+                      <option value="missing">Missing</option>
+                    </select>
+                  </td>
+                  <td style={S.td}>
+                    <select style={{ ...S.select, width: 110,
+                      background: condOk ? "#f0fdf4" : "#fef2f2",
+                      color:      condOk ? "#166534" : "#dc2626" }}
+                      value={r.condition}
+                      onChange={e => setField(si, d.id, "condition", e.target.value)}>
+                      <option value="good">Good</option>
+                      <option value="damaged">Damaged</option>
+                      <option value="expired">Expired</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        {si > 0 && (
+          <button style={{ ...S.btnPrimary, background: "#64748b" }} onClick={() => setStep(si - 1)}>
+            ← {stocks[si - 1]}
+          </button>
+        )}
+        <button style={S.btnPrimary} onClick={() => setStep(isLast ? "review" : si + 1)}>
+          {isLast ? "Review Round →" : `Next: ${stocks[si + 1]} →`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Default tab configuration (used when agency has no custom tab_config) ────
 const DEFAULT_TAB_CONFIG = [
   { id: "inventory",    label: "Inventory",          icon: "📦", adminOnly: true,  visible: true },
@@ -2321,6 +2664,7 @@ const DEFAULT_TAB_CONFIG = [
   { id: "transfers",    label: "Transfers",          icon: "🔄", adminOnly: false, visible: true },
   { id: "waste",        label: "Waste",              icon: "🗑️", adminOnly: false, visible: true },
   { id: "audits",       label: "Audits",             icon: "🔍", adminOnly: false, visible: true },
+  { id: "weekly-round", label: "Weekly Round",       icon: "🗓️", adminOnly: true,  visible: true },
   { id: "monthly-logs", label: "Monthly Logs",       icon: "📅", adminOnly: true,  visible: true },
   { id: "exports",      label: "DOH Exports",        icon: "📤", adminOnly: true,  visible: true },
   { id: "users",        label: "Users",              icon: "👥", adminOnly: true,  visible: true },
@@ -2369,7 +2713,8 @@ function MainApp({ user, onLogout }) {
       case "purchases":    return <PurchasesTab user={user} />;
       case "transfers":    return <TransfersTab user={user} />;
       case "waste":        return <WasteTab     user={user} />;
-      case "audits":       return <AuditsTab    user={user} />;
+      case "audits":       return <AuditsTab       user={user} />;
+      case "weekly-round": return <WeeklyRoundTab  user={user} />;
       case "monthly-logs": return <MonthlyLogsTab user={user} />;
       case "exports":      return <ExportsTab user={user} />;
       case "users":        return <UsersTab currentUser={user} />;
