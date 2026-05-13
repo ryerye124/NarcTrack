@@ -167,6 +167,9 @@ async function migrate() {
       )
     `);
 
+    // 14b. Stock limits — max_qty per inventory row
+    await client.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS max_qty NUMERIC`);
+
     // 14. Agency compliance metadata — required for DOH form exports
     const agencyMetaCols = [
       ["agency_code",        "TEXT"],   // NYS EMS Agency Code #
@@ -794,7 +797,7 @@ app.post("/api/inventory", auth, adminOnly, async (req, res) => {
 app.get("/api/inventory/alerts", auth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT id,stock,drug,conc,unit,qty,min_qty
+      `SELECT id,stock,drug,conc,unit,qty,min_qty,max_qty
        FROM inventory
        WHERE agency_id=$1 AND qty <= min_qty
        ORDER BY stock,drug`,
@@ -804,15 +807,22 @@ app.get("/api/inventory/alerts", auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch("/api/inventory/:id/minqty", auth, adminOnly, async (req, res) => {
+// Update min/max stock limits per inventory row
+app.patch("/api/inventory/:id/limits", auth, adminOnly, async (req, res) => {
   try {
     const minQty = parseFloat(req.body.minQty);
+    const maxQty = req.body.maxQty !== undefined && req.body.maxQty !== ""
+      ? parseFloat(req.body.maxQty)
+      : null;
     if (isNaN(minQty) || minQty < 0)
       return res.status(400).json({ error: "minQty must be a non-negative number" });
+    if (maxQty !== null && (isNaN(maxQty) || maxQty < minQty))
+      return res.status(400).json({ error: "maxQty must be >= minQty" });
     const { rows } = await pool.query(
-      "UPDATE inventory SET min_qty=$1 WHERE id=$2 AND agency_id=$3 RETURNING *",
-      [minQty, req.params.id, req.user.agency_id]
+      "UPDATE inventory SET min_qty=$1, max_qty=$2 WHERE id=$3 AND agency_id=$4 RETURNING *",
+      [minQty, maxQty, req.params.id, req.user.agency_id]
     );
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

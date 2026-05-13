@@ -345,15 +345,19 @@ function calcML(doseAmount, doseUnit, concStr) {
 
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
 function InventoryTab({ user }) {
-  const [inv,      setInv     ] = useState({});
-  const [loading,  setLoading ] = useState(true);
-  const [showAdd,  setShowAdd ] = useState(false);
-  const [err,      setErr     ] = useState("");
-  const [msg,      setMsg     ] = useState("");
+  const isAdmin = user.role === "admin";
+  const [inv,       setInv      ] = useState({});
+  const [loading,   setLoading  ] = useState(true);
+  const [showAdd,   setShowAdd  ] = useState(false);
+  const [editLimits,setEditLimits] = useState(false);
+  const [limitEdits,setLimitEdits] = useState({});  // id -> { minQty, maxQty }
+  const [savingId,  setSavingId ] = useState(null);
+  const [err,       setErr      ] = useState("");
+  const [msg,       setMsg      ] = useState("");
   const stocks = getStocks(user);
   const [form, setForm] = useState({
     stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "",
-    minQty: 5, manufacturer: "", lot: "", supplier: "", supplierDEA: "",
+    minQty: 5, maxQty: "", manufacturer: "", lot: "", supplier: "", supplierDEA: "",
   });
 
   const load = useCallback(async () => {
@@ -364,6 +368,15 @@ function InventoryTab({ user }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // Seed limit edit state from fresh inventory data
+  useEffect(() => {
+    const edits = {};
+    Object.values(inv).flat().forEach(item => {
+      edits[item.id] = { minQty: item.min_qty ?? "", maxQty: item.max_qty ?? "" };
+    });
+    setLimitEdits(edits);
+  }, [inv]);
+
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
 
   async function addDrug(e) {
@@ -371,21 +384,56 @@ function InventoryTab({ user }) {
     try {
       await api("/api/inventory", { method: "POST", body: JSON.stringify(form) });
       setMsg("Drug added to inventory."); setShowAdd(false);
-      setForm({ stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "", minQty: 5, manufacturer: "", lot: "", supplier: "", supplierDEA: "" });
+      setForm({ stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "", minQty: 5, maxQty: "", manufacturer: "", lot: "", supplier: "", supplierDEA: "" });
       load();
     } catch (ex) { setErr(ex.message); }
+  }
+
+  async function saveLimit(id) {
+    setSavingId(id); setErr(""); setMsg("");
+    try {
+      await api(`/api/inventory/${id}/limits`, {
+        method: "PATCH",
+        body: JSON.stringify(limitEdits[id]),
+      });
+      setMsg("Limits updated.");
+      load();
+    } catch (ex) { setErr(ex.message); }
+    finally { setSavingId(null); }
+  }
+
+  function stockStatus(item) {
+    if (item.qty <= 0) return { label: "OUT",  bg: "#fef2f2", color: "#dc2626", pill: false };
+    if (item.qty <= item.min_qty) return { label: "LOW",  bg: "#fffbeb", color: "#d97706", pill: false };
+    if (item.max_qty && item.qty >= item.max_qty) return { label: "FULL", bg: "#f0fdf4", color: "#16a34a", pill: true };
+    return { label: "OK", bg: "#f0fdf4", color: "#16a34a", pill: true };
   }
 
   if (loading) return <div style={S.loading}>Loading inventory…</div>;
 
   return (
     <div style={S.page}>
-      <div style={{ ...S.row, justifyContent: "space-between" }}>
-        <h2 style={S.h2}>Inventory</h2>
-        {user.role === "admin" && (
-          <button style={S.btnPrimary} onClick={() => setShowAdd(v => !v)}>+ Add Drug</button>
+      <div style={{ ...S.row, justifyContent: "space-between", marginBottom: 20 }}>
+        <h2 style={{ ...S.h2, margin: 0 }}>Inventory</h2>
+        {isAdmin && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              style={{ ...S.btn, background: editLimits ? "#1e293b" : "#f1f5f9", color: editLimits ? "#fff" : "#475569", border: "1.5px solid #e2e8f0" }}
+              onClick={() => { setEditLimits(v => !v); setMsg(""); setErr(""); }}>
+              {editLimits ? "✓ Done Editing" : "⚙ Edit Stock Limits"}
+            </button>
+            <button style={S.btnPrimary} onClick={() => setShowAdd(v => !v)}>+ Add Drug</button>
+          </div>
         )}
       </div>
+
+      {editLimits && (
+        <div style={{ background: "#eff6ff", border: "1.5px solid #bfdbfe", borderRadius: 10, padding: "12px 16px", marginBottom: 18, fontSize: 13, color: "#1d4ed8" }}>
+          <strong>Stock Limits Mode</strong> — Set the minimum and maximum quantities for each drug in each stock location.
+          Alerts fire when a drug drops to or below its minimum. Maximum helps track when a stock is fully restocked.
+        </div>
+      )}
+
       {err && <div style={S.errBox}>{err}</div>}
       {msg && <div style={S.okBox}>{msg}</div>}
 
@@ -402,12 +450,13 @@ function InventoryTab({ user }) {
             <label style={S.label}>Concentration (e.g. 10mg/mL)<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
             <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} placeholder="mL" /></label>
             <label style={S.label}>Initial Qty<input style={S.input} type="number" min="0" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
-            <label style={S.label}>Min Qty Alert<input style={S.input} type="number" min="0" value={form.minQty} onChange={f("minQty")} /></label>
+            <label style={S.label}>Min Qty (alert threshold)<input style={S.input} type="number" min="0" step="0.01" value={form.minQty} onChange={f("minQty")} /></label>
+            <label style={S.label}>Max Qty (full stock)<input style={S.input} type="number" min="0" step="0.01" value={form.maxQty} onChange={f("maxQty")} placeholder="Optional" /></label>
             <label style={S.label}>Manufacturer<input style={S.input} value={form.manufacturer} onChange={f("manufacturer")} /></label>
             <label style={S.label}>Lot #<input style={S.input} value={form.lot} onChange={f("lot")} /></label>
             <label style={S.label}>Supplier<input style={S.input} value={form.supplier} onChange={f("supplier")} /></label>
             <label style={S.label}>Supplier DEA #<input style={S.input} value={form.supplierDEA} onChange={f("supplierDEA")} /></label>
-            <div style={{ ...S.span2, display: "flex", gap: 8, gridColumn: "1/-1" }}>
+            <div style={{ gridColumn: "1/-1", display: "flex", gap: 8 }}>
               <button style={S.btnPrimary} type="submit">Save</button>
               <button style={{ ...S.btn, background: "#e2e8f0", color: "#475569" }} type="button" onClick={() => setShowAdd(false)}>Cancel</button>
             </div>
@@ -417,36 +466,107 @@ function InventoryTab({ user }) {
 
       {stocks.map(stock => (
         <div key={stock} style={S.card}>
-          <h3 style={S.h3}>{stock}</h3>
+          <h3 style={{ ...S.h3, marginBottom: 14 }}>{stock}</h3>
           {!inv[stock]?.length ? (
             <p style={{ color: "#94a3b8", fontSize: 13 }}>No drugs in this stock.</p>
-          ) : (
+          ) : editLimits ? (
+            /* ── Limits editor ── */
             <table style={S.tbl}>
               <thead>
                 <tr>
-                  {["Drug","Concentration","Qty","Unit","Min Qty","Status","Manufacturer","Lot #","Supplier"].map(h =>
+                  {["Drug","Concentration","Current Qty","Unit","Min Qty","Max Qty",""].map(h =>
                     <th key={h} style={S.th}>{h}</th>
                   )}
                 </tr>
               </thead>
               <tbody>
-                {inv[stock].map(item => (
-                  <tr key={item.id}>
-                    <td style={S.td}><strong>{item.drug}</strong></td>
-                    <td style={S.td}>{item.conc}</td>
-                    <td style={S.td}><strong style={{ color: item.qty <= item.min_qty ? "#dc2626" : "#16a34a" }}>{item.qty}</strong></td>
-                    <td style={S.td}>{item.unit}</td>
-                    <td style={S.td}>{item.min_qty}</td>
-                    <td style={S.td}>
-                      <span style={S.pill(item.qty > item.min_qty)}>
-                        {item.qty <= 0 ? "OUT" : item.qty <= item.min_qty ? "LOW" : "OK"}
-                      </span>
-                    </td>
-                    <td style={S.td}>{item.manufacturer}</td>
-                    <td style={S.td}>{item.lot}</td>
-                    <td style={S.td}>{item.supplier}</td>
-                  </tr>
-                ))}
+                {inv[stock].map(item => {
+                  const edit = limitEdits[item.id] || { minQty: item.min_qty, maxQty: item.max_qty ?? "" };
+                  const dirty = String(edit.minQty) !== String(item.min_qty) ||
+                                String(edit.maxQty) !== String(item.max_qty ?? "");
+                  return (
+                    <tr key={item.id} style={{ background: dirty ? "#fefce8" : undefined }}>
+                      <td style={S.td}><strong>{item.drug}</strong></td>
+                      <td style={S.td}>{item.conc}</td>
+                      <td style={S.td}>
+                        <strong style={{ color: item.qty <= item.min_qty ? "#dc2626" : "#16a34a" }}>{item.qty}</strong>
+                      </td>
+                      <td style={S.td}>{item.unit}</td>
+                      <td style={S.td}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                          <input
+                            style={{ ...S.input, width: 72, padding: "5px 8px" }}
+                            type="number" min="0" step="0.01"
+                            value={edit.minQty}
+                            onChange={e => setLimitEdits(p => ({ ...p, [item.id]: { ...p[item.id], minQty: e.target.value } }))}
+                          />
+                          <span style={{ fontSize: 10, color: "#94a3b8" }}>alert below</span>
+                        </div>
+                      </td>
+                      <td style={S.td}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                          <input
+                            style={{ ...S.input, width: 72, padding: "5px 8px" }}
+                            type="number" min="0" step="0.01"
+                            value={edit.maxQty}
+                            placeholder="—"
+                            onChange={e => setLimitEdits(p => ({ ...p, [item.id]: { ...p[item.id], maxQty: e.target.value } }))}
+                          />
+                          <span style={{ fontSize: 10, color: "#94a3b8" }}>full stock</span>
+                        </div>
+                      </td>
+                      <td style={S.td}>
+                        <button
+                          style={{ ...S.btnPrimary, padding: "5px 12px", fontSize: 12, opacity: dirty ? 1 : 0.4 }}
+                          disabled={!dirty || savingId === item.id}
+                          onClick={() => saveLimit(item.id)}>
+                          {savingId === item.id ? "…" : "Save"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            /* ── Normal inventory view ── */
+            <table style={S.tbl}>
+              <thead>
+                <tr>
+                  {["Drug","Conc","Qty","Unit","Min","Max","Status","Manufacturer","Lot #"].map(h =>
+                    <th key={h} style={S.th}>{h}</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {inv[stock].map(item => {
+                  const st = stockStatus(item);
+                  const pct = item.max_qty ? Math.min(100, Math.round((item.qty / item.max_qty) * 100)) : null;
+                  return (
+                    <tr key={item.id}>
+                      <td style={S.td}><strong>{item.drug}</strong></td>
+                      <td style={S.td}>{item.conc}</td>
+                      <td style={S.td}>
+                        <strong style={{ color: st.color }}>{item.qty}</strong>
+                        {pct !== null && (
+                          <div style={{ marginTop: 4, height: 4, background: "#e2e8f0", borderRadius: 2, width: 60, overflow: "hidden" }}>
+                            <div style={{ height: "100%", width: `${pct}%`, background: st.color, borderRadius: 2, transition: "width .3s" }} />
+                          </div>
+                        )}
+                      </td>
+                      <td style={S.td}>{item.unit}</td>
+                      <td style={S.td}><span style={{ color: "#64748b" }}>{item.min_qty}</span></td>
+                      <td style={S.td}><span style={{ color: "#64748b" }}>{item.max_qty ?? <span style={{ color: "#cbd5e1" }}>—</span>}</span></td>
+                      <td style={S.td}>
+                        <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: st.bg, color: st.color }}>
+                          {st.label}
+                        </span>
+                      </td>
+                      <td style={S.td}>{item.manufacturer}</td>
+                      <td style={S.td}>{item.lot}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
