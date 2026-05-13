@@ -644,7 +644,7 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
 
   return (
     <div style={S.page}>
-      <h2 style={S.h2}>Log Drug Administration</h2>
+      <h2 style={S.h2}>Administer Drug</h2>
       {err && <div style={S.errBox}>{err}</div>}
       {msg && <div style={S.okBox}>{msg}</div>}
       {submitLowStock.length > 0 && (
@@ -3012,7 +3012,7 @@ function DashboardTab({ user, onNavigate, pendingCount, lowStockItems }) {
       <div style={{ display: "flex", gap: 12, marginBottom: 28, flexWrap: "wrap" }}>
         <button onClick={() => onNavigate("log-admin")}
           style={{ ...S.btnPrimary, padding: "11px 22px", fontSize: 14, borderRadius: 8 }}>
-          💉 Log Drug Administration
+          💉 Administer Drug
         </button>
         {isAdmin && pendingCount > 0 && (
           <button onClick={() => onNavigate("pending")}
@@ -3104,7 +3104,7 @@ function DashboardTab({ user, onNavigate, pendingCount, lowStockItems }) {
 // ─── Default tab configuration (used when agency has no custom tab_config) ────
 const DEFAULT_TAB_CONFIG = [
   { id: "inventory",    label: "Inventory",          icon: "📦", adminOnly: true,  visible: true },
-  { id: "log-admin",    label: "Log Administration", icon: "💉", adminOnly: false, visible: true },
+  { id: "log-admin",    label: "Administer", icon: "💉", adminOnly: false, visible: true },
   { id: "pending",      label: "Pending",            icon: "⏳", adminOnly: true,  visible: true },
   { id: "admin-log",    label: "Admin Log",          icon: "📋", adminOnly: false, visible: true },
   { id: "purchases",    label: "Purchases",          icon: "🛒", adminOnly: true,  visible: true },
@@ -3150,7 +3150,7 @@ function MainApp({ user, onLogout }) {
     {
       label: "Daily",
       items: [
-        { id: "log-admin", label: "Log Drug",  icon: "💉" },
+        { id: "log-admin", label: "Administer",  icon: "💉" },
         ...(isAdmin ? [{ id: "pending", label: "Review", icon: "⏳", badge: pendingCount || null }] : []),
       ],
     },
