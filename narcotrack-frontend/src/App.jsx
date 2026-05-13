@@ -422,7 +422,7 @@ function InventoryTab({ user }) {
 }
 
 // ─── Log Administration Tab ───────────────────────────────────────────────────
-function LogAdminTab({ user }) {
+function LogAdminTab({ user, onStockChange }) {
   const availStocks = user.role === "admin" ? getStocks(user) : getStocks(user).filter(s => s !== "Main Stock");
   const blank = () => ({
     stock: availStocks[0], drug: "", conc: "", unit: "",
@@ -433,11 +433,12 @@ function LogAdminTab({ user }) {
     witness: "", wasteAmt: "", wasteWitness: "", wasteReason: "",
     confirmPassword: "",
   });
-  const [form, setForm] = useState(blank);
-  const [inv,  setInv ] = useState({});
-  const [err,  setErr ] = useState("");
-  const [msg,  setMsg ] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [form,         setForm        ] = useState(blank);
+  const [inv,          setInv         ] = useState({});
+  const [err,          setErr         ] = useState("");
+  const [msg,          setMsg         ] = useState("");
+  const [busy,         setBusy        ] = useState(false);
+  const [submitLowStock, setSubmitLowStock] = useState([]);
 
   useEffect(() => { api("/api/inventory").then(setInv).catch(() => {}); }, []);
 
@@ -462,12 +463,14 @@ function LogAdminTab({ user }) {
     if (mlCalc === null) { setErr("Cannot calculate mL — check concentration format (e.g. 10mg/mL)."); return; }
     setBusy(true); setErr(""); setMsg("");
     try {
-      await api("/api/pending", { method: "POST", body: JSON.stringify({
+      const result = await api("/api/pending", { method: "POST", body: JSON.stringify({
         ...form,
         dose:    `${form.doseAmount}${form.doseUnit}`,
         doseQty: String(mlCalc),
       })});
       setMsg("Administration submitted — pending admin verification.");
+      setSubmitLowStock(result.low_stock || []);
+      if (result.low_stock?.length) onStockChange?.();
       setForm(blank());
     } catch (ex) { setErr(ex.message); }
     finally { setBusy(false); }
@@ -486,6 +489,15 @@ function LogAdminTab({ user }) {
       <h2 style={S.h2}>Log Drug Administration</h2>
       {err && <div style={S.errBox}>{err}</div>}
       {msg && <div style={S.okBox}>{msg}</div>}
+      {submitLowStock.length > 0 && (
+        <div style={{ background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 6,
+                      padding: "10px 14px", marginBottom: 12, fontSize: 13 }}>
+          ⚠️ <strong>Stock attention needed:</strong>{" "}
+          {submitLowStock.map(item =>
+            `${item.stock} — ${item.drug} is now at ${item.qty} ${item.unit} (minimum: ${item.min_qty})`
+          ).join("; ")}. An admin should initiate a restock transfer.
+        </div>
+      )}
       <div style={S.card}>
         <form onSubmit={submit} style={S.form3}>
 
@@ -599,7 +611,7 @@ function LogAdminTab({ user }) {
 }
 
 // ─── Pending Verifications Tab (admin) ────────────────────────────────────────
-function PendingTab() {
+function PendingTab({ onStockChange }) {
   const [records,   setRecords  ] = useState([]);
   const [loading,   setLoading  ] = useState(true);
   const [err,       setErr      ] = useState("");
@@ -617,6 +629,7 @@ function PendingTab() {
   async function verify(id) {
     try {
       await api(`/api/pending/${id}/verify`, { method: "POST", body: JSON.stringify({ note: noteMap[id] || "" }) });
+      onStockChange?.();
       load();
     } catch (ex) { setErr(ex.message); }
   }
@@ -686,18 +699,14 @@ function InspectModal({ record, type, onClose }) {
   const dateStr = d.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const timeStr = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
-  async function exportRecord() {
+  async function exportRecord(form) {
     let path;
-    if (type === "admin")    path = `/api/export/doh3850/record/${record.id}`;
-    if (type === "purchase") path = `/api/export/doh3851/purchase/${record.id}`;
-    if (type === "transfer") path = `/api/export/doh3851/transfer/${record.id}`;
+    if (form === "3850" || type === "admin" && !form)  path = `/api/export/doh3850/record/${record.id}`;
+    if (form === "4004")                               path = `/api/export/doh4004/record/${record.id}`;
+    if (type === "purchase")                           path = `/api/export/doh3851/purchase/${record.id}`;
+    if (type === "transfer")                           path = `/api/export/doh3851/transfer/${record.id}`;
     await downloadExport(path);
   }
-
-  const exportLabel = type === "admin"
-    ? "⬇ Export as DOH-3850"
-    : "⬇ Export as DOH-3851";
-  const exportColor = type === "admin" ? "#0ea5e9" : "#7c3aed";
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999,
@@ -782,18 +791,37 @@ function InspectModal({ record, type, onClose }) {
 
         {/* Footer */}
         <div style={{ padding: "14px 24px", borderTop: "1px solid #e2e8f0",
-                      display: "flex", gap: 10, justifyContent: "flex-end", background: "#f8fafc" }}>
+                      display: "flex", gap: 10, justifyContent: "flex-end",
+                      flexWrap: "wrap", background: "#f8fafc" }}>
           <button onClick={onClose}
             style={{ padding: "8px 18px", borderRadius: 6, border: "1px solid #cbd5e1",
                      background: "#fff", color: "#475569", cursor: "pointer", fontSize: 13 }}>
             Close
           </button>
-          <button onClick={exportRecord}
-            style={{ padding: "8px 20px", borderRadius: 6, border: "none",
-                     background: exportColor, color: "#fff", cursor: "pointer",
-                     fontWeight: 700, fontSize: 13 }}>
-            {exportLabel}
-          </button>
+          {type === "admin" && (
+            <>
+              <button onClick={() => exportRecord("3850")}
+                style={{ padding: "8px 18px", borderRadius: 6, border: "none",
+                         background: "#0ea5e9", color: "#fff", cursor: "pointer",
+                         fontWeight: 700, fontSize: 13 }}>
+                ⬇ DOH-3850
+              </button>
+              <button onClick={() => exportRecord("4004")}
+                style={{ padding: "8px 18px", borderRadius: 6, border: "none",
+                         background: "#7c3aed", color: "#fff", cursor: "pointer",
+                         fontWeight: 700, fontSize: 13 }}>
+                ⬇ DOH-4004
+              </button>
+            </>
+          )}
+          {type !== "admin" && (
+            <button onClick={() => exportRecord()}
+              style={{ padding: "8px 20px", borderRadius: 6, border: "none",
+                       background: "#7c3aed", color: "#fff", cursor: "pointer",
+                       fontWeight: 700, fontSize: 13 }}>
+              ⬇ DOH-3851
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1252,10 +1280,12 @@ function AuditsTab({ user }) {
   const [auditor,  setAuditor ] = useState(user.name || "");
   const [witness,  setWitness ] = useState("");
   const [notes,    setNotes   ] = useState("");
-  const [counts,   setCounts  ] = useState({});
-  const [err,      setErr     ] = useState("");
-  const [msg,      setMsg     ] = useState("");
-  const [year,     setYear    ] = useState(String(now.getFullYear()));
+  const [counts,    setCounts   ] = useState({});
+  const [seals,     setSeals    ] = useState({}); // drugId → "intact"|"broken"|"missing"
+  const [condition, setCondition] = useState({}); // drugId → "good"|"damaged"|"expired"
+  const [err,       setErr      ] = useState("");
+  const [msg,       setMsg      ] = useState("");
+  const [year,      setYear     ] = useState(String(now.getFullYear()));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1272,13 +1302,16 @@ function AuditsTab({ user }) {
   async function submit(e) {
     e.preventDefault();
     const results = stockDrugs.map(d => ({
-      drug: d.drug, conc: d.conc, expected: d.qty,
-      counted: parseFloat(counts[d.id] ?? 0),
-      match: parseFloat(counts[d.id] ?? 0) === parseFloat(d.qty),
+      drug: d.drug, conc: d.conc, unit: d.unit, expected: d.qty,
+      counted:   parseFloat(counts[d.id] ?? 0),
+      match:     parseFloat(counts[d.id] ?? 0) === parseFloat(d.qty),
+      seal:      seals[d.id]     || "intact",
+      condition: condition[d.id] || "good",
     }));
     try {
       await api("/api/audits", { method: "POST", body: JSON.stringify({ stock, auditor, witness, results, notes }) });
-      setMsg("Audit saved."); setShowForm(false); setCounts({}); setNotes(""); setWitness(""); load();
+      setMsg("Audit saved."); setShowForm(false);
+      setCounts({}); setSeals({}); setCondition({}); setNotes(""); setWitness(""); load();
     } catch (ex) { setErr(ex.message); }
   }
 
@@ -1304,28 +1337,60 @@ function AuditsTab({ user }) {
           </div>
           <form onSubmit={submit}>
             <table style={S.tbl}>
-              <thead><tr>{["Drug","Concentration","Expected","Counted","Match"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+              <thead>
+                <tr>{["Drug","Conc","Expected","Counted","Count Match","Seal Intact?","Vial Condition"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr>
+              </thead>
               <tbody>
-                {stockDrugs.length === 0 && <tr><td colSpan={5} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No drugs in this stock.</td></tr>}
+                {stockDrugs.length === 0 && <tr><td colSpan={7} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No drugs in this stock.</td></tr>}
                 {stockDrugs.map(d => {
-                  const counted = parseFloat(counts[d.id] ?? "");
-                  const match   = !isNaN(counted) && counted === parseFloat(d.qty);
+                  const counted  = parseFloat(counts[d.id] ?? "");
+                  const match    = !isNaN(counted) && counted === parseFloat(d.qty);
+                  const sealOk   = (seals[d.id] || "intact") === "intact";
+                  const condOk   = (condition[d.id] || "good") === "good";
                   return (
-                    <tr key={d.id}>
-                      <td style={S.td}>{d.drug}</td>
+                    <tr key={d.id} style={{ background: (!sealOk || !condOk) ? "#fff7ed" : "" }}>
+                      <td style={S.td}><strong>{d.drug}</strong></td>
                       <td style={S.td}>{d.conc}</td>
                       <td style={S.td}><strong>{d.qty}</strong> {d.unit}</td>
                       <td style={S.td}>
                         <input style={{ ...S.input, width: 80 }} type="number" min="0" step="0.01"
                           value={counts[d.id] ?? ""} onChange={e => setCounts(p => ({ ...p, [d.id]: e.target.value }))} />
                       </td>
-                      <td style={S.td}>{counts[d.id] !== undefined && <span style={S.pill(match)}>{match ? "MATCH" : "DISCREPANCY"}</span>}</td>
+                      <td style={S.td}>
+                        {counts[d.id] !== undefined && <span style={S.pill(match)}>{match ? "MATCH" : "DISCREPANCY"}</span>}
+                      </td>
+                      <td style={S.td}>
+                        <select style={{ ...S.select, width: 100,
+                          background: sealOk ? "#f0fdf4" : "#fef2f2",
+                          color: sealOk ? "#166534" : "#dc2626" }}
+                          value={seals[d.id] || "intact"}
+                          onChange={e => setSeals(p => ({ ...p, [d.id]: e.target.value }))}>
+                          <option value="intact">Intact</option>
+                          <option value="broken">Broken</option>
+                          <option value="missing">Missing</option>
+                        </select>
+                      </td>
+                      <td style={S.td}>
+                        <select style={{ ...S.select, width: 110,
+                          background: condOk ? "#f0fdf4" : "#fef2f2",
+                          color: condOk ? "#166534" : "#dc2626" }}
+                          value={condition[d.id] || "good"}
+                          onChange={e => setCondition(p => ({ ...p, [d.id]: e.target.value }))}>
+                          <option value="good">Good</option>
+                          <option value="damaged">Damaged</option>
+                          <option value="expired">Expired</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
-            <label style={{ ...S.label, marginTop: 12 }}>Notes<textarea style={S.textarea} value={notes} onChange={e => setNotes(e.target.value)} /></label>
+            <label style={{ ...S.label, marginTop: 12 }}>Notes / Observations
+              <textarea style={S.textarea} value={notes} onChange={e => setNotes(e.target.value)}
+                placeholder="Any additional observations from this inspection…" />
+            </label>
             <button style={{ ...S.btnPrimary, marginTop: 12 }} type="submit">Save Audit</button>
           </form>
         </div>
@@ -1333,12 +1398,14 @@ function AuditsTab({ user }) {
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
-            <thead><tr>{["Date","Stock","Auditor","Witness","Result","Notes"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
+            <thead><tr>{["Date","Stock","Auditor","Witness","Count","Seals","Condition","Notes"].map(h=><th key={h} style={S.th}>{h}</th>)}</tr></thead>
             <tbody>
-              {records.length === 0 && <tr><td colSpan={6} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No audits.</td></tr>}
+              {records.length === 0 && <tr><td colSpan={8} style={{ ...S.td, textAlign: "center", color: "#94a3b8" }}>No audits.</td></tr>}
               {records.map(r => {
-                const res = typeof r.results === "string" ? JSON.parse(r.results) : (r.results || []);
-                const disc = Array.isArray(res) ? res.filter(x => !x.match).length : 0;
+                const res       = typeof r.results === "string" ? JSON.parse(r.results) : (r.results || []);
+                const disc      = Array.isArray(res) ? res.filter(x => !x.match).length : 0;
+                const sealIssue = Array.isArray(res) ? res.filter(x => x.seal && x.seal !== "intact").length : 0;
+                const condIssue = Array.isArray(res) ? res.filter(x => x.condition && x.condition !== "good").length : 0;
                 return (
                   <tr key={r.id}>
                     <td style={S.td}>{new Date(r.created_at).toLocaleDateString()}</td>
@@ -1346,6 +1413,8 @@ function AuditsTab({ user }) {
                     <td style={S.td}>{r.auditor}</td>
                     <td style={S.td}>{r.witness}</td>
                     <td style={S.td}><span style={S.pill(disc === 0)}>{disc === 0 ? "All Match" : `${disc} Discrepancy`}</span></td>
+                    <td style={S.td}><span style={S.pill(sealIssue === 0)}>{sealIssue === 0 ? "All Intact" : `${sealIssue} Issue`}</span></td>
+                    <td style={S.td}><span style={S.pill(condIssue === 0)}>{condIssue === 0 ? "All Good" : `${condIssue} Issue`}</span></td>
                     <td style={S.td}>{r.notes || "—"}</td>
                   </tr>
                 );
@@ -1494,6 +1563,9 @@ function MonthlyLogsTab({ user }) {
           </button>
           <button style={S.btnExport("#7c3aed")} onClick={() => doExport("doh3851")} disabled={!!exporting}>
             {exporting === "doh3851" ? "Generating…" : "⬇ DOH-3851 — Inventory / Purchase Record"}
+          </button>
+          <button style={S.btnExport("#6d28d9")} onClick={() => doExport("doh4004")} disabled={!!exporting}>
+            {exporting === "doh4004" ? "Generating…" : "⬇ DOH-4004 — Controlled Substance Utilization"}
           </button>
           <button style={S.btnExport("#0f766e")} onClick={async () => {
             setExporting("annual"); setErr("");
@@ -2033,6 +2105,15 @@ function MainApp({ user, onLogout }) {
     api("/api/users/me").then(u => setNavAvatarSrc(u.avatar || null)).catch(() => {});
   }, []);
 
+  const [lowStockItems,     setLowStockItems    ] = useState([]);
+  const [alertsDismissed,   setAlertsDismissed  ] = useState(false);
+  const refreshAlerts = useCallback(() => {
+    api("/api/inventory/alerts")
+      .then(items => { setLowStockItems(items); if (items.length > 0) setAlertsDismissed(false); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshAlerts(); }, [refreshAlerts]);
+
   // Use agency tab config from JWT if present, else fall back to defaults
   const tabConfig = (user.agency_tabs && user.agency_tabs.length)
     ? user.agency_tabs
@@ -2048,8 +2129,8 @@ function MainApp({ user, onLogout }) {
   const renderTab = () => {
     switch (tab) {
       case "inventory":    return <InventoryTab user={user} />;
-      case "log-admin":    return <LogAdminTab  user={user} />;
-      case "pending":      return <PendingTab />;
+      case "log-admin":    return <LogAdminTab  user={user} onStockChange={refreshAlerts} />;
+      case "pending":      return <PendingTab onStockChange={refreshAlerts} />;
       case "admin-log":    return <AdminLogTab  user={user} />;
       case "purchases":    return <PurchasesTab user={user} />;
       case "transfers":    return <TransfersTab user={user} />;
@@ -2080,6 +2161,33 @@ function MainApp({ user, onLogout }) {
           <button style={S.logoutBtn} onClick={onLogout}>Sign Out</button>
         </div>
       </nav>
+      {lowStockItems.length > 0 && !alertsDismissed && (
+        <div style={{ background: "#7f1d1d", color: "#fef2f2", padding: "10px 20px",
+                      display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <strong style={{ fontSize: 13 }}>Stock Attention Required — </strong>
+            <span style={{ fontSize: 13 }}>
+              {lowStockItems.map((item, i) => (
+                <span key={item.id}>
+                  {i > 0 && " · "}
+                  <strong>{item.stock}</strong>: {item.drug} {item.conc} — {item.qty} {item.unit} remaining (min {item.min_qty})
+                </span>
+              ))}
+            </span>
+            <button
+              style={{ marginLeft: 12, fontSize: 12, padding: "2px 10px", borderRadius: 4,
+                       border: "none", background: "#fef2f2", color: "#7f1d1d",
+                       cursor: "pointer", fontWeight: 600 }}
+              onClick={() => setTab("transfers")}>
+              Transfer Now
+            </button>
+          </div>
+          <button onClick={() => setAlertsDismissed(true)}
+            style={{ background: "none", border: "none", color: "#fca5a5",
+                     cursor: "pointer", fontSize: 18, lineHeight: 1, flexShrink: 0 }}>✕</button>
+        </div>
+      )}
       {renderTab()}
     </div>
   );

@@ -739,6 +739,20 @@ app.post("/api/inventory", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Low-stock alert feed — returns every item where qty <= min_qty
+app.get("/api/inventory/alerts", auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id,stock,drug,conc,unit,qty,min_qty
+       FROM inventory
+       WHERE agency_id=$1 AND qty <= min_qty
+       ORDER BY stock,drug`,
+      [req.user.agency_id]
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.patch("/api/inventory/:id/minqty", auth, adminOnly, async (req, res) => {
   try {
     const minQty = parseFloat(req.body.minQty);
@@ -806,8 +820,14 @@ app.post("/api/pending", auth, authLimiter, async (req, res) => {
       "UPDATE inventory SET qty=qty-$1,updated_at=NOW() WHERE stock=$2 AND drug=$3 AND conc=$4 AND agency_id=$5",
       [doseQty,d.stock,d.drug,d.conc,req.user.agency_id]
     );
+    // Return current inventory level so frontend can surface low-stock warning immediately
+    const { rows: [updatedInv] } = await client.query(
+      "SELECT stock,drug,conc,unit,qty,min_qty FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
+      [d.stock,d.drug,d.conc,req.user.agency_id]
+    );
     await client.query("COMMIT");
-    res.status(201).json(rows[0]);
+    const low_stock = (updatedInv && updatedInv.qty <= updatedInv.min_qty) ? [updatedInv] : [];
+    res.status(201).json({ ...rows[0], low_stock });
   } catch (err) {
     await client.query("ROLLBACK");
     res.status(500).json({ error: err.message });
@@ -1212,6 +1232,92 @@ app.get("/api/export/doh3851", auth, adminOnly, async (req, res) => {
     res.setHeader("Content-Type","text/csv");
     res.setHeader("Content-Disposition",`attachment; filename="DOH-3851_${mn}_${year}.csv"`);
     res.send([headers.map(h=>`"${h}"`).join(","),...csvRows].join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DOH-4004 — Controlled Substance Utilization (per-encounter individual records)
+app.get("/api/export/doh4004", auth, adminOnly, async (req, res) => {
+  try {
+    const { year, month } = req.query;
+    if (!year || month === undefined) return res.status(400).json({ error: "year and month required" });
+    const { rows } = await pool.query(
+      `SELECT * FROM administrations WHERE status='verified' AND agency_id=$1
+       AND EXTRACT(YEAR FROM created_at)=$2 AND EXTRACT(MONTH FROM created_at)=$3
+       ORDER BY created_at ASC`,
+      [req.user.agency_id, year, parseInt(month)+1]
+    );
+    const headers = [
+      "Date","Time","Run / Call ID","Stock Location",
+      "Drug Name","Concentration","Dose Administered","Volume Withdrawn (mL)","Route",
+      "Patient Name","Chief Complaint",
+      "AEMT Provider Name","AEMT Provider #","Ordering Physician","MD Authorization",
+      "Receiving Hospital","Hospital Record #",
+      "Witness","Waste Amount (mL)","Waste Witness","Waste Reason",
+      "Logged By","Verified By","Date Verified","Verify Note"
+    ];
+    const csvRows = rows.map(r => {
+      const d = new Date(r.created_at);
+      return [
+        d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
+        r.run_id, r.stock, r.drug, r.conc, r.dose, r.dose_qty, r.route,
+        r.patient_name, r.complaint||"",
+        r.provider_name, r.provider_num, r.md_name, r.md_sig||"",
+        r.receiving_hospital, r.hospital_record_num||"",
+        r.witness, r.waste_amt||0, r.waste_witness||"", r.waste_reason||"",
+        r.logged_by, r.verified_by||"",
+        r.verified_at ? new Date(r.verified_at).toLocaleDateString("en-US") : "",
+        r.verify_note||""
+      ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
+    });
+    const mn = ["January","February","March","April","May","June","July","August","September","October","November","December"][parseInt(month)];
+    res.setHeader("Content-Type","text/csv");
+    res.setHeader("Content-Disposition",`attachment; filename="DOH-4004_${mn}_${year}.csv"`);
+    res.send([headers.map(h=>`"${h}"`).join(","),...csvRows].join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DOH-4004 single-record export
+app.get("/api/export/doh4004/record/:id", auth, adminOnly, async (req, res) => {
+  try {
+    const { rows: [r] } = await pool.query(
+      "SELECT * FROM administrations WHERE id=$1 AND agency_id=$2",
+      [req.params.id, req.user.agency_id]
+    );
+    if (!r) return res.status(404).json({ error: "Record not found" });
+    const d = new Date(r.created_at);
+    const lines = [
+      `"NYS DOH-4004 — Controlled Substance Utilization Record"`,
+      `"Agency: ${req.user.agency_name}"`,
+      `"Generated: ${new Date().toLocaleString("en-US")}"`,`""`,
+      `"Date","${d.toLocaleDateString("en-US")}"`,
+      `"Time","${d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}"`,
+      `"Run / Call ID","${r.run_id}"`,
+      `"Stock Location","${r.stock}"`,`""`,
+      `"Drug Name","${r.drug}"`,
+      `"Concentration","${r.conc}"`,
+      `"Dose Administered","${r.dose}"`,
+      `"Volume Withdrawn","${r.dose_qty} mL"`,
+      `"Route","${r.route}"`,`""`,
+      `"Patient Name","${r.patient_name}"`,
+      `"Chief Complaint","${r.complaint||""}"`,
+      `"Receiving Hospital","${r.receiving_hospital}"`,
+      `"Hospital Record #","${r.hospital_record_num||""}"`,`""`,
+      `"AEMT Provider Name","${r.provider_name}"`,
+      `"AEMT Provider #","${r.provider_num}"`,
+      `"Ordering Physician","${r.md_name}"`,
+      `"MD Authorization","${r.md_sig||""}"`,`""`,
+      `"Witness","${r.witness}"`,
+      `"Waste Amount","${r.waste_amt||0} mL"`,
+      `"Waste Witness","${r.waste_witness||""}"`,
+      `"Waste Reason","${r.waste_reason||""}"`,`""`,
+      `"Logged By","${r.logged_by}"`,
+      `"Verified By","${r.verified_by||""}"`,
+      `"Date Verified","${r.verified_at ? new Date(r.verified_at).toLocaleDateString("en-US") : ""}"`,
+      `"Verify Note","${r.verify_note||""}"`
+    ];
+    res.setHeader("Content-Type","text/csv");
+    res.setHeader("Content-Disposition",`attachment; filename="DOH-4004_Record_${r.run_id||r.id}.csv"`);
+    res.send(lines.join("\r\n"));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
