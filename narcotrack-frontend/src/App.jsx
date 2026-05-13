@@ -403,9 +403,12 @@ function InventoryTab({ user }) {
   }
 
   function stockStatus(item) {
-    if (item.qty <= 0) return { label: "OUT",  bg: "#fef2f2", color: "#dc2626", pill: false };
-    if (item.qty <= item.min_qty) return { label: "LOW",  bg: "#fffbeb", color: "#d97706", pill: false };
-    if (item.max_qty && item.qty >= item.max_qty) return { label: "FULL", bg: "#f0fdf4", color: "#16a34a", pill: true };
+    const qty = parseFloat(item.qty);
+    const min = parseFloat(item.min_qty);
+    const max = item.max_qty !== null && item.max_qty !== undefined ? parseFloat(item.max_qty) : null;
+    if (qty <= 0)   return { label: "OUT",  bg: "#fef2f2", color: "#dc2626", pill: false };
+    if (qty <= min) return { label: "LOW",  bg: "#fffbeb", color: "#d97706", pill: false };
+    if (max !== null && qty >= max) return { label: "FULL", bg: "#f0fdf4", color: "#16a34a", pill: true };
     return { label: "OK", bg: "#f0fdf4", color: "#16a34a", pill: true };
   }
 
@@ -489,7 +492,7 @@ function InventoryTab({ user }) {
                       <td style={S.td}><strong>{item.drug}</strong></td>
                       <td style={S.td}>{item.conc}</td>
                       <td style={S.td}>
-                        <strong style={{ color: item.qty <= item.min_qty ? "#dc2626" : "#16a34a" }}>{item.qty}</strong>
+                        <strong style={{ color: parseFloat(item.qty) <= parseFloat(item.min_qty) ? "#dc2626" : "#16a34a" }}>{item.qty}</strong>
                       </td>
                       <td style={S.td}>{item.unit}</td>
                       <td style={S.td}>
@@ -541,7 +544,7 @@ function InventoryTab({ user }) {
               <tbody>
                 {inv[stock].map(item => {
                   const st = stockStatus(item);
-                  const pct = item.max_qty ? Math.min(100, Math.round((item.qty / item.max_qty) * 100)) : null;
+                  const pct = item.max_qty ? Math.min(100, Math.round((parseFloat(item.qty) / parseFloat(item.max_qty)) * 100)) : null;
                   return (
                     <tr key={item.id}>
                       <td style={S.td}><strong>{item.drug}</strong></td>
