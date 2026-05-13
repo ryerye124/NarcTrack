@@ -78,11 +78,11 @@ const S = {
   appShell:   { fontFamily: "'Inter','Segoe UI',sans-serif", display: "flex", height: "100vh", overflow: "hidden", background: "#f8fafc" },
 
   // Sidebar
-  sidebar:      bg => ({ width: 232, minWidth: 232, background: bg || "#0f172a", display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }),
-  sidebarTop:   { padding: "18px 16px 14px", borderBottom: "1px solid rgba(255,255,255,.07)" },
-  sidebarLogo:  { display: "flex", alignItems: "center", gap: 9 },
-  sidebarTitle: { fontSize: 14, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  sidebarSub:   { fontSize: 10, color: "#475569", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase" },
+  sidebar:      bg => ({ width: 248, minWidth: 248, background: bg || "#0f172a", display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }),
+  sidebarTop:   { padding: "16px 14px 12px", borderBottom: "1px solid rgba(255,255,255,.07)" },
+  sidebarLogo:  { display: "flex", alignItems: "flex-start", gap: 9 },
+  sidebarTitle: { fontSize: 13, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.01em", lineHeight: 1.35, wordBreak: "break-word" },
+  sidebarSub:   { fontSize: 9, color: "#475569", marginTop: 4, letterSpacing: ".05em", textTransform: "uppercase" },
   sidebarNav:   { flex: 1, overflowY: "auto", padding: "6px 8px" },
   sidebarSec:   { fontSize: 9, fontWeight: 700, color: "#475569", letterSpacing: ".1em", textTransform: "uppercase", padding: "14px 8px 5px" },
   sidebarItem:  a => ({ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", cursor: "pointer", border: "none", width: "100%", textAlign: "left", background: a ? "rgba(59,130,246,.18)" : "transparent", color: a ? "#93c5fd" : "#94a3b8", fontWeight: a ? 600 : 400, fontSize: 13, borderRadius: 7, borderLeft: a ? "3px solid #3b82f6" : "3px solid transparent", marginBottom: 1, transition: "background .1s,color .1s" }),
@@ -3220,8 +3220,8 @@ function MainApp({ user, onLogout }) {
         {/* Agency name */}
         <div style={S.sidebarTop}>
           <div style={S.sidebarLogo}>
-            <span style={{ fontSize: 20 }}>🚑</span>
-            <div style={{ minWidth: 0 }}>
+            <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>🚑</span>
+            <div>
               <div style={S.sidebarTitle}>{user.agency_name || "NarcTrack EMS"}</div>
               <div style={S.sidebarSub}>§80.136 Compliant</div>
             </div>
