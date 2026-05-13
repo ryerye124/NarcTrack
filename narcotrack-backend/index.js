@@ -167,6 +167,30 @@ async function migrate() {
       )
     `);
 
+    // 14. Agency compliance metadata — required for DOH form exports
+    const agencyMetaCols = [
+      ["agency_code",        "TEXT"],   // NYS EMS Agency Code #
+      ["cs_license",         "TEXT"],   // NYS Controlled Substance License #
+      ["bne_license",        "TEXT"],   // BNE Class 3C License #
+      ["dea_number",         "TEXT"],   // DEA Registration #
+      ["dea_registrant",     "TEXT"],   // DEA Registrant Name
+      ["cs_agent_name",      "TEXT"],   // CS Agent's Name
+      ["cs_agent_phone",     "TEXT"],   // CS Agent's Telephone #
+      ["cs_agent_email",     "TEXT"],   // CS Agent's E-mail Address
+      ["contact_name",       "TEXT"],   // DEA Registrant Contact Name
+      ["contact_phone",      "TEXT"],   // Contact's Telephone #
+      ["contact_email",      "TEXT"],   // Contact's E-mail Address
+      ["address",            "TEXT"],   // Address Line 1
+      ["address2",           "TEXT"],   // Address Line 2
+      ["city",               "TEXT"],
+      ["state",              "TEXT"],
+      ["zip",                "TEXT"],
+      ["county",             "TEXT"],
+    ];
+    for (const [col, type] of agencyMetaCols) {
+      await client.query(`ALTER TABLE agencies ADD COLUMN IF NOT EXISTS ${col} ${type}`);
+    }
+
     await client.query("COMMIT");
     console.log("Migration complete.");
   } catch (err) {
@@ -481,16 +505,43 @@ app.get("/api/agency", auth, async (req, res) => {
 
 app.patch("/api/agency", auth, adminOnly, async (req, res) => {
   try {
-    const { primary_color, nav_color, accent_color, stocks } = req.body;
+    const {
+      primary_color, nav_color, accent_color, stocks,
+      agency_code, cs_license, bne_license, dea_number, dea_registrant,
+      cs_agent_name, cs_agent_phone, cs_agent_email,
+      contact_name, contact_phone, contact_email,
+      address, address2, city, state, zip, county,
+    } = req.body;
     const { rows } = await pool.query(
       `UPDATE agencies SET
-         primary_color = COALESCE($1, primary_color),
-         nav_color     = COALESCE($2, nav_color),
-         accent_color  = COALESCE($3, accent_color),
-         stocks        = COALESCE($4, stocks)
-       WHERE id=$5 RETURNING *`,
+         primary_color  = COALESCE($1,  primary_color),
+         nav_color      = COALESCE($2,  nav_color),
+         accent_color   = COALESCE($3,  accent_color),
+         stocks         = COALESCE($4,  stocks),
+         agency_code    = COALESCE($5,  agency_code),
+         cs_license     = COALESCE($6,  cs_license),
+         bne_license    = COALESCE($7,  bne_license),
+         dea_number     = COALESCE($8,  dea_number),
+         dea_registrant = COALESCE($9,  dea_registrant),
+         cs_agent_name  = COALESCE($10, cs_agent_name),
+         cs_agent_phone = COALESCE($11, cs_agent_phone),
+         cs_agent_email = COALESCE($12, cs_agent_email),
+         contact_name   = COALESCE($13, contact_name),
+         contact_phone  = COALESCE($14, contact_phone),
+         contact_email  = COALESCE($15, contact_email),
+         address        = COALESCE($16, address),
+         address2       = COALESCE($17, address2),
+         city           = COALESCE($18, city),
+         state          = COALESCE($19, state),
+         zip            = COALESCE($20, zip),
+         county         = COALESCE($21, county)
+       WHERE id=$22 RETURNING *`,
       [primary_color, nav_color, accent_color,
        stocks ? JSON.stringify(stocks) : null,
+       agency_code, cs_license, bne_license, dea_number, dea_registrant,
+       cs_agent_name, cs_agent_phone, cs_agent_email,
+       contact_name, contact_phone, contact_email,
+       address, address2, city, state, zip, county,
        req.user.agency_id]
     );
     res.json(rows[0]);
@@ -1158,8 +1209,30 @@ app.post("/api/monthly-logs", auth, adminOnly, async (req, res) => {
 });
 
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
+// Helper: load agency metadata and validate required fields for DOH exports
+const EXPORT_REQUIRED_FIELDS = [
+  ["agency_code",    "NYS EMS Agency Code"],
+  ["cs_license",     "NYS CS License #"],
+  ["dea_number",     "DEA Registration #"],
+  ["cs_agent_name",  "CS Agent Name"],
+];
+async function getAgencyMeta(agency_id, res) {
+  const { rows: [ag] } = await pool.query("SELECT * FROM agencies WHERE id=$1", [agency_id]);
+  if (!ag) { res.status(500).json({ error: "Agency not found" }); return null; }
+  const missing = EXPORT_REQUIRED_FIELDS
+    .filter(([field]) => !ag[field])
+    .map(([, label]) => label);
+  if (missing.length) {
+    res.status(400).json({
+      error: `Export failed: required agency information is incomplete — ${missing.join(", ")}. Please complete Agency Settings before exporting.`
+    });
+    return null;
+  }
+  return ag;
+}
 app.get("/api/export/doh3850", auth, adminOnly, async (req, res) => {
   try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
     const { year, month } = req.query;
     if (!year || month === undefined) return res.status(400).json({ error: "year and month required" });
     const { rows } = await pool.query(
@@ -1191,6 +1264,7 @@ app.get("/api/export/doh3850", auth, adminOnly, async (req, res) => {
 
 app.get("/api/export/doh3851", auth, adminOnly, async (req, res) => {
   try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
     const { year, month } = req.query;
     if (!year || month === undefined) return res.status(400).json({ error: "year and month required" });
     const mn1 = parseInt(month)+1;
@@ -1238,6 +1312,7 @@ app.get("/api/export/doh3851", auth, adminOnly, async (req, res) => {
 // DOH-4004 — Controlled Substance Utilization (per-encounter individual records)
 app.get("/api/export/doh4004", auth, adminOnly, async (req, res) => {
   try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
     const { year, month } = req.query;
     if (!year || month === undefined) return res.status(400).json({ error: "year and month required" });
     const { rows } = await pool.query(
@@ -1279,6 +1354,7 @@ app.get("/api/export/doh4004", auth, adminOnly, async (req, res) => {
 // DOH-4004 single-record export
 app.get("/api/export/doh4004/record/:id", auth, adminOnly, async (req, res) => {
   try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
     const { rows: [r] } = await pool.query(
       "SELECT * FROM administrations WHERE id=$1 AND agency_id=$2",
       [req.params.id, req.user.agency_id]
@@ -1323,6 +1399,7 @@ app.get("/api/export/doh4004/record/:id", auth, adminOnly, async (req, res) => {
 
 app.get("/api/export/annual", auth, adminOnly, async (req, res) => {
   try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
     const { year } = req.query;
     if (!year) return res.status(400).json({ error: "year required" });
     const { rows: admins }    = await pool.query(`SELECT * FROM administrations WHERE status='verified' AND agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,[req.user.agency_id,year]);

@@ -2079,6 +2079,151 @@ function ProfileTab({ user, onAvatarUpdate }) {
   );
 }
 
+// ─── Agency Settings Tab (admin) ─────────────────────────────────────────────
+function AgencySettingsTab() {
+  const [form,    setForm   ] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy,    setBusy   ] = useState(false);
+  const [err,     setErr    ] = useState("");
+  const [msg,     setMsg    ] = useState("");
+
+  useEffect(() => {
+    api("/api/agency")
+      .then(ag => setForm({
+        agency_code:    ag.agency_code    || "",
+        cs_license:     ag.cs_license     || "",
+        bne_license:    ag.bne_license    || "",
+        dea_number:     ag.dea_number     || "",
+        dea_registrant: ag.dea_registrant || "",
+        cs_agent_name:  ag.cs_agent_name  || "",
+        cs_agent_phone: ag.cs_agent_phone || "",
+        cs_agent_email: ag.cs_agent_email || "",
+        contact_name:   ag.contact_name   || "",
+        contact_phone:  ag.contact_phone  || "",
+        contact_email:  ag.contact_email  || "",
+        address:        ag.address        || "",
+        address2:       ag.address2       || "",
+        city:           ag.city           || "",
+        state:          ag.state          || "",
+        zip:            ag.zip            || "",
+        county:         ag.county         || "",
+      }))
+      .catch(ex => setErr(ex.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  async function save(e) {
+    e.preventDefault(); setBusy(true); setErr(""); setMsg("");
+    try {
+      await api("/api/agency", { method: "PATCH", body: JSON.stringify(form) });
+      setMsg("Agency settings saved.");
+    } catch (ex) { setErr(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  if (loading) return <div style={S.loading}>Loading…</div>;
+
+  const required = { borderLeft: "3px solid #f59e0b" };
+  const reqLabel = <span style={{ color: "#f59e0b", fontWeight: 700, marginLeft: 4 }}>*</span>;
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>Agency Settings</h2>
+      <div style={{ ...S.errBox, background: "#fef3c7", color: "#92400e", borderColor: "#f59e0b",
+                    border: "1px solid #f59e0b", marginBottom: 16, fontSize: 13 }}>
+        <strong>Fields marked <span style={{ color: "#f59e0b" }}>*</span> are required for DOH form exports.</strong>{" "}
+        Exports will be blocked until all required fields are completed.
+      </div>
+      {err && <div style={S.errBox}>{err}</div>}
+      {msg && <div style={S.okBox}>{msg}</div>}
+
+      <form onSubmit={save}>
+        {/* ── Compliance IDs ── */}
+        <div style={S.card}>
+          <h3 style={S.h3}>Compliance Identifiers</h3>
+          <div style={S.form3}>
+            <label style={S.label}>NYS EMS Agency Code {reqLabel}
+              <input style={{ ...S.input, ...required }} value={form.agency_code} onChange={f("agency_code")} placeholder="e.g. 1234" required />
+            </label>
+            <label style={S.label}>NYS CS License # {reqLabel}
+              <input style={{ ...S.input, ...required }} value={form.cs_license} onChange={f("cs_license")} placeholder="CS-XXXXXX" required />
+            </label>
+            <label style={S.label}>BNE Class 3C License #
+              <input style={S.input} value={form.bne_license} onChange={f("bne_license")} placeholder="03C-XXXXXX" />
+            </label>
+            <label style={S.label}>DEA Registration # {reqLabel}
+              <input style={{ ...S.input, ...required }} value={form.dea_number} onChange={f("dea_number")} placeholder="XX0000000" required />
+            </label>
+            <label style={S.label}>DEA Registrant Name
+              <input style={S.input} value={form.dea_registrant} onChange={f("dea_registrant")} />
+            </label>
+          </div>
+        </div>
+
+        {/* ── CS Agent ── */}
+        <div style={S.card}>
+          <h3 style={S.h3}>Controlled Substance Agent</h3>
+          <div style={S.form3}>
+            <label style={S.label}>CS Agent Name {reqLabel}
+              <input style={{ ...S.input, ...required }} value={form.cs_agent_name} onChange={f("cs_agent_name")} required />
+            </label>
+            <label style={S.label}>CS Agent Phone
+              <input style={S.input} value={form.cs_agent_phone} onChange={f("cs_agent_phone")} placeholder="(555) 555-5555" />
+            </label>
+            <label style={S.label}>CS Agent Email
+              <input style={S.input} type="email" value={form.cs_agent_email} onChange={f("cs_agent_email")} />
+            </label>
+          </div>
+        </div>
+
+        {/* ── DEA Contact ── */}
+        <div style={S.card}>
+          <h3 style={S.h3}>DEA Registrant Contact</h3>
+          <div style={S.form3}>
+            <label style={S.label}>Contact Name
+              <input style={S.input} value={form.contact_name} onChange={f("contact_name")} />
+            </label>
+            <label style={S.label}>Contact Phone
+              <input style={S.input} value={form.contact_phone} onChange={f("contact_phone")} />
+            </label>
+            <label style={S.label}>Contact Email
+              <input style={S.input} type="email" value={form.contact_email} onChange={f("contact_email")} />
+            </label>
+          </div>
+        </div>
+
+        {/* ── Address ── */}
+        <div style={S.card}>
+          <h3 style={S.h3}>Agency Address</h3>
+          <div style={S.form3}>
+            <label style={{ ...S.label, gridColumn: "1/-1" }}>Address Line 1
+              <input style={S.input} value={form.address} onChange={f("address")} />
+            </label>
+            <label style={{ ...S.label, gridColumn: "1/-1" }}>Address Line 2
+              <input style={S.input} value={form.address2} onChange={f("address2")} />
+            </label>
+            <label style={S.label}>City<input style={S.input} value={form.city} onChange={f("city")} /></label>
+            <label style={S.label}>State<input style={S.input} value={form.state} onChange={f("state")} placeholder="NY" /></label>
+            <label style={S.label}>Zip<input style={S.input} value={form.zip} onChange={f("zip")} /></label>
+            <label style={S.label}>County<input style={S.input} value={form.county} onChange={f("county")} /></label>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <button style={S.btnPrimary} type="submit" disabled={busy}>
+            {busy ? "Saving…" : "Save Agency Settings"}
+          </button>
+          <span style={{ fontSize: 12, color: "#64748b" }}>
+            These values appear on all DOH form exports.
+          </span>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 // ─── Default tab configuration (used when agency has no custom tab_config) ────
 const DEFAULT_TAB_CONFIG = [
   { id: "inventory",    label: "Inventory",          icon: "📦", adminOnly: true,  visible: true },
@@ -2091,7 +2236,8 @@ const DEFAULT_TAB_CONFIG = [
   { id: "audits",       label: "Audits",             icon: "🔍", adminOnly: false, visible: true },
   { id: "monthly-logs", label: "Monthly Logs",       icon: "📅", adminOnly: true,  visible: true },
   { id: "users",        label: "Users",              icon: "👥", adminOnly: true,  visible: true },
-  { id: "profile",      label: "My Profile",         icon: "👤", adminOnly: false, visible: true },
+  { id: "agency-settings", label: "Agency Settings",  icon: "⚙️", adminOnly: true,  visible: true },
+  { id: "profile",         label: "My Profile",        icon: "👤", adminOnly: false, visible: true },
 ];
 
 // ─── Main App Shell ───────────────────────────────────────────────────────────
@@ -2138,8 +2284,9 @@ function MainApp({ user, onLogout }) {
       case "audits":       return <AuditsTab    user={user} />;
       case "monthly-logs": return <MonthlyLogsTab user={user} />;
       case "users":        return <UsersTab currentUser={user} />;
-      case "profile":      return <ProfileTab user={user} onAvatarUpdate={setNavAvatarSrc} />;
-      default:             return null;
+      case "agency-settings": return <AgencySettingsTab />;
+      case "profile":         return <ProfileTab user={user} onAvatarUpdate={setNavAvatarSrc} />;
+      default:                return null;
     }
   };
 
