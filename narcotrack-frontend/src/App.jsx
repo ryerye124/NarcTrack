@@ -2973,13 +2973,12 @@ function DashboardTab({ user, onNavigate, pendingCount, lowStockItems }) {
       border: pendingCount > 0 ? "#fecaca" : "#bbf7d0",
       action: "pending",
     }] : []),
-    {
-      label: "Low Stock", value: lowStockItems.length,
-      color: lowStockItems.length > 0 ? "#f59e0b" : "#22c55e",
-      bg: lowStockItems.length > 0 ? "#fffbeb" : "#f0fdf4",
-      border: lowStockItems.length > 0 ? "#fcd34d" : "#bbf7d0",
-      action: "inventory",
-    },
+    (() => {
+      const outCt = lowStockItems.filter(i => parseFloat(i.qty) <= 0).length;
+      const lowCt = lowStockItems.filter(i => parseFloat(i.qty) > 0).length;
+      if (outCt > 0) return { label: "Out of Stock", value: outCt, color: "#ef4444", bg: "#fef2f2", border: "#fecaca", action: "inventory" };
+      return { label: "Low Stock", value: lowCt, color: lowCt > 0 ? "#f59e0b" : "#22c55e", bg: lowCt > 0 ? "#fffbeb" : "#f0fdf4", border: lowCt > 0 ? "#fcd34d" : "#bbf7d0", action: "inventory" };
+    })(),
     { label: "Today's Admins", value: todayCt, color: "#3b82f6", bg: "#eff6ff", border: "#bfdbfe", action: "admin-log" },
     { label: "Month Total",    value: monthCt, color: "#8b5cf6", bg: "#f5f3ff", border: "#ddd6fe", action: "admin-log" },
   ];
@@ -3077,15 +3076,24 @@ function DashboardTab({ user, onNavigate, pendingCount, lowStockItems }) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {lowStockItems.map(item => (
-                <div key={item.id} style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 18 }}>⚠️</span>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13, color: "#92400e" }}>{item.drug} — {item.stock}</div>
-                    <div style={{ fontSize: 12, color: "#b45309" }}>{item.qty} {item.unit} remaining · min {item.min_qty}</div>
+              {lowStockItems.map(item => {
+                const isOut = parseFloat(item.qty) <= 0;
+                return (
+                  <div key={item.id} style={{
+                    background: isOut ? "#fef2f2" : "#fffbeb",
+                    border: `1px solid ${isOut ? "#fca5a5" : "#fcd34d"}`,
+                    borderRadius: 8, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10
+                  }}>
+                    <span style={{ fontSize: 18 }}>{isOut ? "🚫" : "⚠️"}</span>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: isOut ? "#991b1b" : "#92400e" }}>{item.drug} — {item.stock}</div>
+                      <div style={{ fontSize: 12, color: isOut ? "#dc2626" : "#b45309" }}>
+                        {isOut ? "OUT OF STOCK" : `${item.qty} ${item.unit} remaining`} · min {item.min_qty}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {isAdmin && (
                 <button onClick={() => onNavigate("transfers")}
                   style={{ ...S.btn, background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, marginTop: 4 }}>
@@ -3275,9 +3283,17 @@ function MainApp({ user, onLogout }) {
             <span>⚠️</span>
             <span style={{ flex: 1 }}>
               <strong>Stock Alert: </strong>
-              {lowStockItems.map((item, i) => (
-                <span key={item.id}>{i > 0 && " · "}<strong>{item.stock}</strong>: {item.drug} — {item.qty} {item.unit} left</span>
-              ))}
+              {lowStockItems.map((item, i) => {
+                const isOut = parseFloat(item.qty) <= 0;
+                return (
+                  <span key={item.id}>{i > 0 && " · "}<strong>{item.stock}</strong>: {item.drug} —{" "}
+                    {isOut
+                      ? <span style={{ background: "#ef4444", color: "#fff", borderRadius: 3, padding: "1px 5px", fontSize: 11, fontWeight: 700 }}>OUT</span>
+                      : <span>{item.qty} {item.unit} left</span>
+                    }
+                  </span>
+                );
+              })}
             </span>
             {isAdmin && (
               <button onClick={() => setTab("transfers")}
