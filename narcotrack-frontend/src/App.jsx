@@ -2458,7 +2458,7 @@ function ExportsTab({ user }) {
 
   const allStocks = getStocks(user);
   const substocks = allStocks.filter(s => s !== "Main Stock");
-  const drugs = [...new Set(inv.map(i => i.drug))].sort();
+  const drugs = [...new Set(Object.values(inv).flat().map(i => i.drug))].sort();
 
   const now      = new Date();
   const todayStr = now.toISOString().split("T")[0];
