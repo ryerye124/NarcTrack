@@ -2,7 +2,7 @@
 // React 18 + React Router v6, wired to the NarcTrack API
 // NYS 10 NYCRR §80.136 Compliant
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   BrowserRouter, Routes, Route, Navigate,
   useNavigate, useLocation,
@@ -10,7 +10,9 @@ import {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const API    = import.meta.env.VITE_API_URL || "http://localhost:3001";
-const STOCKS = ["Main Stock", "929", "9299"];
+const STOCKS = ["Main Stock", "929", "9299"]; // fallback when JWT has no agency_stocks
+const getStocks = user =>
+  (user?.agency_stocks?.length ? user.agency_stocks : STOCKS);
 const ROUTES_LIST = ["IV", "IM", "IN", "SubQ", "PO", "SL"];
 const MONTHS = [
   "January","February","March","April","May","June",
@@ -55,9 +57,8 @@ async function downloadExport(urlPath) {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    alert(err.error || "Export failed");
-    return;
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || "Export failed");
   }
   const cd       = res.headers.get("content-disposition") || "";
   const match    = cd.match(/filename="([^"]+)"/);
@@ -126,18 +127,28 @@ function AuthCallback() {
   const navigate = useNavigate();
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const token  = params.get("token");
+    const code   = params.get("code");
     const error  = params.get("error");
     if (error === "pending") {
       navigate("/login?msg=" + encodeURIComponent("Account pending role assignment — contact an admin."));
-    } else if (error) {
-      navigate("/login?msg=" + encodeURIComponent("Google sign-in failed. Try again."));
-    } else if (token) {
-      saveToken(token);
-      navigate("/");
-    } else {
-      navigate("/login?msg=No+token+received");
+      return;
     }
+    if (error) {
+      navigate("/login?msg=" + encodeURIComponent("Google sign-in failed. Try again."));
+      return;
+    }
+    if (!code) {
+      navigate("/login?msg=No+auth+code+received");
+      return;
+    }
+    fetch(`${API}/api/auth/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    })
+      .then(r => r.ok ? r.json() : r.json().then(b => Promise.reject(new Error(b.error || "Exchange failed"))))
+      .then(({ token }) => { saveToken(token); navigate("/"); })
+      .catch(() => navigate("/login?msg=" + encodeURIComponent("Sign-in failed. Please try again.")));
   }, [navigate]);
   return <div style={S.center}>Completing sign-in…</div>;
 }
@@ -304,8 +315,9 @@ function InventoryTab({ user }) {
   const [showAdd,  setShowAdd ] = useState(false);
   const [err,      setErr     ] = useState("");
   const [msg,      setMsg     ] = useState("");
+  const stocks = getStocks(user);
   const [form, setForm] = useState({
-    stock: STOCKS[0], drug: "", conc: "", unit: "mL", qty: "",
+    stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "",
     minQty: 5, manufacturer: "", lot: "", supplier: "", supplierDEA: "",
   });
 
@@ -324,7 +336,7 @@ function InventoryTab({ user }) {
     try {
       await api("/api/inventory", { method: "POST", body: JSON.stringify(form) });
       setMsg("Drug added to inventory."); setShowAdd(false);
-      setForm({ stock: STOCKS[0], drug: "", conc: "", unit: "mL", qty: "", minQty: 5, manufacturer: "", lot: "", supplier: "", supplierDEA: "" });
+      setForm({ stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "", minQty: 5, manufacturer: "", lot: "", supplier: "", supplierDEA: "" });
       load();
     } catch (ex) { setErr(ex.message); }
   }
@@ -348,7 +360,7 @@ function InventoryTab({ user }) {
           <form onSubmit={addDrug} style={S.form3}>
             <label style={S.label}>Stock
               <select style={S.select} value={form.stock} onChange={f("stock")} required>
-                {STOCKS.map(s => <option key={s}>{s}</option>)}
+                {stocks.map(s => <option key={s}>{s}</option>)}
               </select>
             </label>
             <label style={S.label}>Drug Name<input style={S.input} value={form.drug} onChange={f("drug")} required /></label>
@@ -368,7 +380,7 @@ function InventoryTab({ user }) {
         </div>
       )}
 
-      {STOCKS.map(stock => (
+      {stocks.map(stock => (
         <div key={stock} style={S.card}>
           <h3 style={S.h3}>{stock}</h3>
           {!inv[stock]?.length ? (
@@ -411,7 +423,7 @@ function InventoryTab({ user }) {
 
 // ─── Log Administration Tab ───────────────────────────────────────────────────
 function LogAdminTab({ user }) {
-  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const availStocks = user.role === "admin" ? getStocks(user) : getStocks(user).filter(s => s !== "Main Stock");
   const blank = () => ({
     stock: availStocks[0], drug: "", conc: "", unit: "",
     doseAmount: "", doseUnit: "mg",
@@ -831,7 +843,7 @@ function AdminLogTab({ user }) {
           <label style={S.label}>Stock
             <select style={S.select} value={filters.stock} onChange={ff("stock")}>
               <option value="">All</option>
-              {STOCKS.map(s => <option key={s}>{s}</option>)}
+              {getStocks(user).map(s => <option key={s}>{s}</option>)}
             </select>
           </label>
         )}
@@ -882,9 +894,9 @@ function AdminLogTab({ user }) {
 }
 
 // ─── Purchases Tab (admin) ────────────────────────────────────────────────────
-function PurchasesTab() {
+function PurchasesTab({ user }) {
   const now  = new Date();
-  const blank = () => ({ stock: STOCKS[0], drug: "", conc: "", unit: "mL", qty: "", supplier: "", supplierDEA: "", manufacturer: "", lot: "", receivedBy: "" });
+  const blank = () => ({ stock: getStocks(user)[0], drug: "", conc: "", unit: "mL", qty: "", supplier: "", supplierDEA: "", manufacturer: "", lot: "", receivedBy: "" });
   const [records,  setRecords ] = useState([]);
   const [loading,  setLoading ] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -929,7 +941,7 @@ function PurchasesTab() {
         <div style={S.card}>
           <h3 style={S.h3}>Log Purchase</h3>
           <form onSubmit={submit} style={S.form3}>
-            <label style={S.label}>Stock<select style={S.select} value={form.stock} onChange={f("stock")} required>{STOCKS.map(s=><option key={s}>{s}</option>)}</select></label>
+            <label style={S.label}>Stock<select style={S.select} value={form.stock} onChange={f("stock")} required>{getStocks(user).map(s=><option key={s}>{s}</option>)}</select></label>
             <label style={S.label}>Drug<input style={S.input} value={form.drug} onChange={f("drug")} required /></label>
             <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
             <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} /></label>
@@ -980,7 +992,7 @@ function TransfersTab({ user }) {
   const now = new Date();
   // BUG-006 fix: availStocks defined BEFORE blank() so blank() can reference it safely
   // BUG-001 fix: role-aware defaults — non-admin never gets "Main Stock" as fromStock
-  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const availStocks = user.role === "admin" ? getStocks(user) : getStocks(user).filter(s => s !== "Main Stock");
   const blank = () => ({
     fromStock:    availStocks[0],
     toStock:      availStocks[1] ?? availStocks[0],
@@ -1116,7 +1128,8 @@ function TransfersTab({ user }) {
 // ─── Waste Tab ────────────────────────────────────────────────────────────────
 function WasteTab({ user }) {
   const now  = new Date();
-  const blank = () => ({ stock: "929", drug: "", conc: "", unit: "", qty: "", reason: "", disposedBy: user.name || "", witness: "", method: "Inactivation Kit" });
+  const availStocks = user.role === "admin" ? getStocks(user) : getStocks(user).filter(s => s !== "Main Stock");
+  const blank = () => ({ stock: availStocks[0], drug: "", conc: "", unit: "", qty: "", reason: "", disposedBy: user.name || "", witness: "", method: "Inactivation Kit" });
   const [records,  setRecords ] = useState([]);
   const [loading,  setLoading ] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -1137,7 +1150,6 @@ function WasteTab({ user }) {
   useEffect(() => { load(); }, [load]);
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const availStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
   const stockDrugs  = inv[form.stock] || [];
 
   async function submit(e) {
@@ -1235,7 +1247,7 @@ function AuditsTab({ user }) {
   const [showForm, setShowForm] = useState(false);
   const [inv,      setInv     ] = useState({});
   // BUG-004 fix: "Sub-Stock 1" was renamed to "929"; use role-aware default
-  const auditAvailStocks = user.role === "admin" ? STOCKS : STOCKS.filter(s => s !== "Main Stock");
+  const auditAvailStocks = user.role === "admin" ? getStocks(user) : getStocks(user).filter(s => s !== "Main Stock");
   const [stock,    setStock   ] = useState(user.role === "admin" ? "Main Stock" : auditAvailStocks[0]);
   const [auditor,  setAuditor ] = useState(user.name || "");
   const [witness,  setWitness ] = useState("");
@@ -1603,7 +1615,7 @@ function UsersTab({ currentUser }) {
 
   async function resetPassword(u, e) {
     e.preventDefault(); setErr("");
-    if (resetPw.pw.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (resetPw.pw.length < 8) { setErr("Password must be at least 8 characters."); return; }
     if (resetPw.pw !== resetPw.pw2) { setErr("Passwords do not match."); return; }
     try {
       await api(`/api/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ new_password: resetPw.pw }) });
@@ -1710,8 +1722,8 @@ function UsersTab({ currentUser }) {
                 const initials = (u.name || "?").split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
                 const isResetting = resetId === u.id;
                 return (
-                  <>
-                    <tr key={u.id}>
+                  <React.Fragment key={u.id}>
+                    <tr>
                       <td style={{ ...S.td, width: 40 }}>
                         {u.avatar
                           ? <img src={u.avatar} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover" }} />
@@ -1777,8 +1789,8 @@ function UsersTab({ currentUser }) {
                             </div>
                             <label style={{ ...S.label, margin: 0 }}>
                               <span style={{ fontSize: 11 }}>New Password</span>
-                              <input style={{ ...S.input, width: 160 }} type="password" required minLength={6}
-                                placeholder="min 6 characters"
+                              <input style={{ ...S.input, width: 160 }} type="password" required minLength={8}
+                                placeholder="min 8 characters"
                                 value={resetPw.pw} onChange={e => setResetPw(p => ({ ...p, pw: e.target.value }))} />
                             </label>
                             <label style={{ ...S.label, margin: 0 }}>
@@ -1794,7 +1806,7 @@ function UsersTab({ currentUser }) {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -1808,19 +1820,15 @@ function UsersTab({ currentUser }) {
   );
 }
 
-// ─── Nav avatar (fetches latest avatar on mount) ─────────────────────────────
-function NavAvatar({ user }) {
-  const [src, setSrc] = useState(null);
-  useEffect(() => {
-    api("/api/users/me").then(u => setSrc(u.avatar || null)).catch(() => {});
-  }, []);
+// ─── Nav avatar — receives src from MainApp (no per-render fetch) ─────────────
+function NavAvatar({ user, src }) {
   const initials = (user.name || "?").split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
   if (src) return <img src={src} alt="" style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", border: "2px solid #475569" }} />;
   return <div style={{ width: 26, height: 26, borderRadius: "50%", background: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#fff" }}>{initials}</div>;
 }
 
 // ─── Profile Tab — available to all users ─────────────────────────────────────
-function ProfileTab({ user }) {
+function ProfileTab({ user, onAvatarUpdate }) {
   const [profile,     setProfile    ] = useState(null);
   const [loading,     setLoading    ] = useState(true);
   const [err,         setErr        ] = useState("");
@@ -1848,6 +1856,7 @@ function ProfileTab({ user }) {
       const dataUrl = await resizeImage(file, 200);
       await api("/api/users/me", { method: "PATCH", body: JSON.stringify({ avatar: dataUrl }) });
       setProfile(p => ({ ...p, avatar: dataUrl }));
+      onAvatarUpdate?.(dataUrl);
       setMsg("Profile picture updated.");
     } catch (ex) { setErr(ex.message); }
     finally { setAvatarBusy(false); e.target.value = ""; }
@@ -1858,6 +1867,7 @@ function ProfileTab({ user }) {
     try {
       await api("/api/users/me", { method: "PATCH", body: JSON.stringify({ avatar: null }) });
       setProfile(p => ({ ...p, avatar: null }));
+      onAvatarUpdate?.(null);
       setMsg("Profile picture removed.");
     } catch (ex) { setErr(ex.message); }
   }
@@ -2018,6 +2028,11 @@ function MainApp({ user, onLogout }) {
   const navColor = user.agency_nav     || "#1e293b";
   const accent   = user.agency_accent  || "#38bdf8";
 
+  const [navAvatarSrc, setNavAvatarSrc] = useState(null);
+  useEffect(() => {
+    api("/api/users/me").then(u => setNavAvatarSrc(u.avatar || null)).catch(() => {});
+  }, []);
+
   // Use agency tab config from JWT if present, else fall back to defaults
   const tabConfig = (user.agency_tabs && user.agency_tabs.length)
     ? user.agency_tabs
@@ -2036,13 +2051,13 @@ function MainApp({ user, onLogout }) {
       case "log-admin":    return <LogAdminTab  user={user} />;
       case "pending":      return <PendingTab />;
       case "admin-log":    return <AdminLogTab  user={user} />;
-      case "purchases":    return <PurchasesTab />;
+      case "purchases":    return <PurchasesTab user={user} />;
       case "transfers":    return <TransfersTab user={user} />;
       case "waste":        return <WasteTab     user={user} />;
       case "audits":       return <AuditsTab    user={user} />;
       case "monthly-logs": return <MonthlyLogsTab user={user} />;
       case "users":        return <UsersTab currentUser={user} />;
-      case "profile":      return <ProfileTab user={user} />;
+      case "profile":      return <ProfileTab user={user} onAvatarUpdate={setNavAvatarSrc} />;
       default:             return null;
     }
   };
@@ -2060,7 +2075,7 @@ function MainApp({ user, onLogout }) {
           </button>
         ))}
         <div style={S.navUser}>
-          <NavAvatar user={user} />
+          <NavAvatar user={user} src={navAvatarSrc} />
           <span>{user.name} · <span style={{ color: isAdmin ? "#818cf8" : accent }}>{user.role}</span></span>
           <button style={S.logoutBtn} onClick={onLogout}>Sign Out</button>
         </div>
@@ -2463,7 +2478,7 @@ function SysAdminUsers() {
 
   async function sysResetPassword(u, e) {
     e.preventDefault(); setErr("");
-    if (resetPw.pw.length < 6) { setErr("Password must be at least 6 characters."); return; }
+    if (resetPw.pw.length < 8) { setErr("Password must be at least 8 characters."); return; }
     if (resetPw.pw !== resetPw.pw2) { setErr("Passwords do not match."); return; }
     try {
       await api(`/api/sysadmin/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ password: resetPw.pw }) });

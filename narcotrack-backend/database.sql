@@ -207,14 +207,36 @@ INSERT INTO inventory (stock, drug, conc, unit, qty, min_qty, manufacturer, lot,
   ('Sub-Stock 2','Naloxone',    '2mg/mL',   'mL',  6,  4, 'Amphastar', 'AM-5501', 'Main Stock',        '')
 ON CONFLICT (stock, drug, conc) DO NOTHING;
 
--- ─── Seed admin user ──────────────────────────────────────────────────────────
--- Password: admin123 (CHANGE THIS IMMEDIATELY after first login)
--- bcrypt hash of "admin123" with 12 rounds:
-INSERT INTO users (username, email, password_hash, name, badge, role) VALUES
-  ('admin', 'admin@youragency.com',
-   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TiGniZpp8bVlzB.9SZQNE3MxY3Uu',
-   'Administrator', 'ADM-001', 'admin')
-ON CONFLICT (username) DO NOTHING;
+-- ─── OAuth exchange codes (short-lived, one-time tokens for Google OAuth flow) ─
+CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
+  code        TEXT PRIMARY KEY,
+  token       TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_codes_created ON oauth_exchange_codes (created_at);
+
+-- ─── Agencies ─────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS agencies (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL UNIQUE,
+  dea_number  TEXT,
+  address     TEXT,
+  stocks      TEXT[] NOT NULL DEFAULT ARRAY['Main Stock'],
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ─── User ↔ Agency membership ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_agencies (
+  user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agency_id  INT NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','user','pending')),
+  PRIMARY KEY (user_id, agency_id)
+);
+
+-- ─── Sysadmin seed ────────────────────────────────────────────────────────────
+-- The sysadmin account is auto-seeded at API startup using the
+-- SYSADMIN_INITIAL_PASSWORD environment variable (only if no sysadmin exists).
+-- Do NOT insert a hardcoded password hash here.
 
 -- ─── Row Level Security (optional — Supabase recommended) ─────────────────────
 -- These prevent direct database access without going through your API.

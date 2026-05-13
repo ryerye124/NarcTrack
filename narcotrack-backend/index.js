@@ -5,16 +5,33 @@
 // ============================================================
 
 require("dotenv").config();
-const express = require("express");
-const { Pool } = require("pg");
-const bcrypt = require("bcrypt");
-const jwt = require("jsonwebtoken");
-const cors = require("cors");
-const passport = require("passport");
-const GoogleStrategy = require("passport-google-oauth20").Strategy;
-const session = require("express-session");
 
-const app = express();
+// ─── Startup environment validation (Issue #14) ───────────────────────────────
+function requireEnv(...vars) {
+  const missing = vars.filter(v => !process.env[v]);
+  if (missing.length) {
+    console.error(`FATAL: Missing required environment variables: ${missing.join(", ")}`);
+    process.exit(1);
+  }
+}
+requireEnv(
+  "DATABASE_URL", "JWT_SECRET", "SESSION_SECRET",
+  "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+  "API_URL", "FRONTEND_URL"
+);
+
+const express    = require("express");
+const { Pool }   = require("pg");
+const bcrypt     = require("bcrypt");
+const jwt        = require("jsonwebtoken");
+const cors       = require("cors");
+const passport   = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const session    = require("express-session");
+const rateLimit  = require("express-rate-limit");
+const crypto     = require("crypto");
+
+const app  = express();
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -70,7 +87,7 @@ async function migrate() {
       await client.query(`UPDATE ${t} SET agency_id = 1 WHERE agency_id IS NULL`);
     }
 
-    // 6. Drop old single-agency stock CHECK constraints (agencies use different stock names)
+    // 6. Drop old single-agency stock CHECK constraints
     await client.query(`
       DO $$ DECLARE r RECORD; BEGIN
         FOR r IN SELECT conname, conrelid::regclass AS tname
@@ -89,22 +106,36 @@ async function migrate() {
       EXCEPTION WHEN duplicate_table THEN NULL; END $$;
     `);
 
-    // 8. Global role on users (sysadmin lives here, not in user_agencies)
+    // 8. Global role on users
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS global_role VARCHAR(20)`);
 
-    // 9. Tab/icon config per agency (JSON array of tab objects)
+    // 9. Tab/icon config per agency
     await client.query(`ALTER TABLE agencies ADD COLUMN IF NOT EXISTS tab_config JSONB`);
 
-    // 10. Seed the system admin user (username: sysadmin / password: SysAdmin123!)
-    const saHash = await bcrypt.hash("SysAdmin123!", 12);
-    await client.query(`
-      INSERT INTO users (username, password_hash, name, global_role)
-      VALUES ('sysadmin', $1, 'System Administrator', 'sysadmin')
-      ON CONFLICT (username) DO UPDATE SET global_role='sysadmin'
-    `, [saHash]);
+    // 10. Seed sysadmin — Issue #2 fix: only insert if not present; never overwrite
+    //     a previously-changed password on redeploy.
+    const { rows: [existingSA] } = await client.query(
+      "SELECT id FROM users WHERE username='sysadmin'"
+    );
+    if (!existingSA) {
+      const initialPw = process.env.SYSADMIN_INITIAL_PASSWORD || "SysAdmin123!";
+      const saHash = await bcrypt.hash(initialPw, 12);
+      await client.query(`
+        INSERT INTO users (username, password_hash, name, global_role)
+        VALUES ('sysadmin', $1, 'System Administrator', 'sysadmin')
+        ON CONFLICT (username) DO NOTHING
+      `, [saHash]);
+      if (!process.env.SYSADMIN_INITIAL_PASSWORD) {
+        console.warn("SECURITY WARNING: SYSADMIN_INITIAL_PASSWORD not set. Using built-in default — change it immediately after first login.");
+      }
+    } else {
+      // Ensure global_role is set even for pre-existing sysadmin rows
+      await client.query(
+        "UPDATE users SET global_role='sysadmin' WHERE username='sysadmin' AND global_role IS NULL"
+      );
+    }
 
-    // 11. user_agencies junction table — one user can belong to many agencies
-    //    with a distinct role and badge per agency
+    // 11. user_agencies junction table
     await client.query(`
       CREATE TABLE IF NOT EXISTS user_agencies (
         user_id   INTEGER NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
@@ -127,6 +158,15 @@ async function migrate() {
       ON CONFLICT (user_id, agency_id) DO NOTHING
     `);
 
+    // 13. OAuth exchange codes table — Issue #1: secure token handoff (no JWT in URL)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
+        code       TEXT PRIMARY KEY,
+        token      TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
     await client.query("COMMIT");
     console.log("Migration complete.");
   } catch (err) {
@@ -138,31 +178,69 @@ async function migrate() {
 }
 migrate();
 
-// ─── Middleware ───────────────────────────────────────────────────────────────
-// Allow requests from the configured frontend URL AND all Vercel preview deployments
+// Periodic cleanup of expired exchange codes
+setInterval(async () => {
+  try {
+    await pool.query("DELETE FROM oauth_exchange_codes WHERE created_at < NOW() - INTERVAL '2 minutes'");
+  } catch { /* non-fatal */ }
+}, 60_000);
+
+// ─── Rate limiters — Issue #7 ─────────────────────────────────────────────────
+// Trust Railway's reverse proxy so X-Forwarded-For is used for real client IP
+app.set("trust proxy", 1);
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many attempts. Please try again in 15 minutes." },
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ─── CORS — Issue #6: restrict Vercel wildcard to configured prefixes ─────────
 const allowedOrigin = (origin, callback) => {
   if (!origin) return callback(null, true); // server-to-server / curl
-  const allowed = process.env.FRONTEND_URL || "";
-  if (
-    origin === allowed ||
-    origin.endsWith(".vercel.app") ||
-    origin.startsWith("http://localhost")
-  ) return callback(null, true);
+  const exact = process.env.FRONTEND_URL || "";
+  if (origin === exact) return callback(null, true);
+  if (origin.startsWith("http://localhost")) return callback(null, true);
+
+  // Only allow Vercel preview URLs whose project name matches ALLOWED_VERCEL_PREFIXES
+  const prefixes = (process.env.ALLOWED_VERCEL_PREFIXES || "narcotrack")
+    .split(",").map(p => p.trim()).filter(Boolean);
+  const isAllowedVercel = prefixes.some(prefix =>
+    origin.startsWith(`https://${prefix}`) && origin.endsWith(".vercel.app")
+  );
+  if (isAllowedVercel) return callback(null, true);
+
   callback(new Error(`CORS: origin ${origin} not allowed`));
 };
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors({ origin: allowedOrigin, credentials: true }));
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "2mb" })); // reduced; avatar validated at the route level
 app.use(session({
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: process.env.NODE_ENV === "production" },
+  cookie: { secure: process.env.NODE_ENV === "production", httpOnly: true, sameSite: "lax" },
 }));
 app.use(passport.initialize());
 app.use(passport.session());
 
+// General API rate limit
+app.use("/api/", apiLimiter);
+// Strict limits on auth endpoints — Issue #7
+app.use("/api/login", authLimiter);
+app.use("/api/auth/google", authLimiter);
+
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
-// membership = { role, badge } from user_agencies for this agency
 function issueToken(user, agency, membership) {
   return jwt.sign(
     {
@@ -178,7 +256,7 @@ function issueToken(user, agency, membership) {
       agency_nav:     agency.nav_color,
       agency_accent:  agency.accent_color,
       agency_stocks:  agency.stocks,
-      agency_tabs:    agency.tab_config || null,  // per-agency tab config for MainApp
+      agency_tabs:    agency.tab_config || null,
     },
     process.env.JWT_SECRET,
     { expiresIn: "12h" }
@@ -208,7 +286,6 @@ function sysAdminOnly(req, res, next) {
   next();
 }
 
-// Sysadmin JWT — no agency scope
 function issueSysAdminToken(user) {
   return jwt.sign(
     { id: user.id, email: user.email, username: user.username,
@@ -229,13 +306,10 @@ passport.use(new GoogleStrategy({
     const email    = profile.emails[0].value;
     const agencyId = req.session.oauth_agency_id || 1;
 
-    // Find user globally by email (not scoped to agency)
     let { rows: [user] } = await pool.query(
-      "SELECT * FROM users WHERE email=$1",
-      [email]
+      "SELECT * FROM users WHERE email=$1", [email]
     );
 
-    // First-time Google sign-in — create global user record
     if (!user) {
       const { rows: [newUser] } = await pool.query(
         `INSERT INTO users (email, name, google_id, username)
@@ -245,7 +319,6 @@ passport.use(new GoogleStrategy({
       user = newUser;
     }
 
-    // Ensure a user_agencies row exists for this agency (default: pending)
     await pool.query(
       `INSERT INTO user_agencies (user_id, agency_id, role, badge)
        VALUES ($1,$2,'pending','UNASSIGNED')
@@ -253,7 +326,6 @@ passport.use(new GoogleStrategy({
       [user.id, agencyId]
     );
 
-    // Attach selected agency_id so the callback can fetch it
     user._selected_agency_id = agencyId;
     return done(null, user);
   } catch (err) { return done(err, null); }
@@ -276,13 +348,13 @@ passport.deserializeUser(async ({ id, agency_id }, done) => {
   done(null, rows[0] || null);
 });
 
-// Google OAuth entry — store selected agency in session
 app.get("/api/auth/google", (req, res, next) => {
-  if (req.query.agency_id) req.session.oauth_agency_id = parseInt(req.query.agency_id);
+  const agencyId = parseInt(req.query.agency_id);
+  if (!isNaN(agencyId)) req.session.oauth_agency_id = agencyId;
   passport.authenticate("google", { scope: ["profile", "email"] })(req, res, next);
 });
 
-// Google callback
+// Issue #1 fix: redirect with a short-lived opaque exchange code, not the JWT
 app.get("/api/auth/google/callback",
   passport.authenticate("google", { failureRedirect: `${process.env.FRONTEND_URL}/login?error=auth_failed` }),
   async (req, res) => {
@@ -290,7 +362,6 @@ app.get("/api/auth/google/callback",
 
     const agencyId = req.session.oauth_agency_id || 1;
 
-    // Fetch membership for selected agency
     const { rows: [membership] } = await pool.query(
       "SELECT role, badge FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
       [req.user.id, agencyId]
@@ -302,12 +373,38 @@ app.get("/api/auth/google/callback",
     if (!ag) return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_agency`);
 
     const token = issueToken(req.user, ag, membership);
-    res.redirect(`${process.env.FRONTEND_URL}/auth-callback?token=${token}`);
+
+    // Store token behind a one-time 60-second exchange code — no JWT in the URL
+    const code = crypto.randomBytes(32).toString("hex");
+    await pool.query(
+      "INSERT INTO oauth_exchange_codes (code, token) VALUES ($1, $2)",
+      [code, token]
+    );
+
+    res.redirect(`${process.env.FRONTEND_URL}/auth-callback?code=${code}`);
   }
 );
 
-// ─── Public: list agencies (for login dropdown) ───────────────────────────────
-// Fully open CORS — this is public info, no credentials involved
+// One-time exchange: code → JWT (Issue #1)
+app.post("/api/auth/exchange", authLimiter, async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code || typeof code !== "string")
+      return res.status(400).json({ error: "Invalid exchange code" });
+
+    const { rows: [row] } = await pool.query(
+      `DELETE FROM oauth_exchange_codes
+       WHERE code=$1 AND created_at > NOW() - INTERVAL '60 seconds'
+       RETURNING token`,
+      [code]
+    );
+    if (!row) return res.status(401).json({ error: "Invalid or expired exchange code" });
+
+    res.json({ token: row.token });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Public: list agencies ────────────────────────────────────────────────────
 app.get("/api/agencies", cors({ origin: "*" }), async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -323,7 +420,6 @@ app.post("/api/login", async (req, res) => {
     const { username, password, agency_id } = req.body;
     if (!username || !password) return res.status(400).json({ error: "Missing credentials" });
 
-    // Step 1 — find user globally (not scoped to an agency)
     const { rows: [user] } = await pool.query(
       "SELECT * FROM users WHERE username=$1 OR email=$1",
       [username.toLowerCase()]
@@ -333,14 +429,11 @@ app.post("/api/login", async (req, res) => {
     if (!await bcrypt.compare(password, user.password_hash))
                              return res.status(401).json({ error: "Wrong password. Please try again." });
 
-    // System admin — no agency required
     if (user.global_role === "sysadmin")
       return res.json({ token: issueSysAdminToken(user), role: "sysadmin" });
 
-    // Agency users must select an agency
     if (!agency_id) return res.status(400).json({ error: "Please select an agency." });
 
-    // Step 2 — check agency membership
     const { rows: [membership] } = await pool.query(
       "SELECT role, badge FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
       [user.id, agency_id]
@@ -348,7 +441,6 @@ app.post("/api/login", async (req, res) => {
     if (!membership) return res.status(403).json({ error: "You don't have access to that agency. Contact an administrator." });
     if (membership.role === "pending") return res.status(403).json({ error: "Your account is pending role assignment. Contact an administrator." });
 
-    // Step 3 — fetch agency branding
     const { rows: [agency] } = await pool.query("SELECT * FROM agencies WHERE id=$1", [agency_id]);
     if (!agency) return res.status(404).json({ error: "Agency not found" });
 
@@ -362,7 +454,7 @@ app.post("/api/auth/refresh", auth, async (req, res) => {
     const { rows: [row] } = await pool.query(
       `SELECT u.*, ua.role AS ua_role, ua.badge AS ua_badge,
               a.id AS ag_id, a.name AS ag_name, a.slug,
-              a.primary_color, a.nav_color, a.accent_color, a.stocks
+              a.primary_color, a.nav_color, a.accent_color, a.stocks, a.tab_config
        FROM users u
        JOIN user_agencies ua ON ua.user_id = u.id AND ua.agency_id = $2
        JOIN agencies       a  ON a.id = $2
@@ -372,7 +464,8 @@ app.post("/api/auth/refresh", auth, async (req, res) => {
     if (!row) return res.status(404).json({ error: "User or membership not found" });
     const agency     = { id: row.ag_id, name: row.ag_name, slug: row.slug,
                          primary_color: row.primary_color, nav_color: row.nav_color,
-                         accent_color: row.accent_color, stocks: row.stocks };
+                         accent_color: row.accent_color, stocks: row.stocks,
+                         tab_config: row.tab_config };
     const membership = { role: row.ua_role, badge: row.ua_badge };
     res.json({ token: issueToken(row, agency, membership) });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -438,7 +531,21 @@ app.patch("/api/users/me", auth, async (req, res) => {
       params.push(await bcrypt.hash(newPassword, 12));
       updates.push(`password_hash=$${params.length}`);
     }
-    if (avatar !== undefined) { params.push(avatar); updates.push(`avatar=$${params.length}`); }
+
+    // Avatar validation — Issue #10
+    if (avatar !== undefined) {
+      if (avatar !== null) {
+        if (typeof avatar !== "string")
+          return res.status(400).json({ error: "Invalid avatar format" });
+        if (avatar.length > 200_000)
+          return res.status(400).json({ error: "Avatar too large (max ~150 KB)" });
+        if (!avatar.startsWith("data:image/"))
+          return res.status(400).json({ error: "Avatar must be an image data-URI" });
+      }
+      params.push(avatar);
+      updates.push(`avatar=$${params.length}`);
+    }
+
     if (!updates.length) return res.json({ ok: true });
 
     params.push(req.user.id);
@@ -450,7 +557,6 @@ app.patch("/api/users/me", auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// List all users in this agency (joined from user_agencies)
 app.get("/api/users", auth, adminOnly, async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -465,7 +571,6 @@ app.get("/api/users", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Look up an existing user globally by email (for adding them to this agency)
 app.get("/api/users/lookup", auth, adminOnly, async (req, res) => {
   try {
     const { email } = req.query;
@@ -475,7 +580,6 @@ app.get("/api/users/lookup", auth, adminOnly, async (req, res) => {
       [email.toLowerCase()]
     );
     if (!user) return res.status(404).json({ error: "No NarcTrack account with that email." });
-    // Check if already in this agency
     const { rows: [existing] } = await pool.query(
       "SELECT role FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
       [user.id, req.user.agency_id]
@@ -484,22 +588,22 @@ app.get("/api/users/lookup", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Create a brand-new user and add them to this agency
 app.post("/api/users", auth, adminOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const { username, password, name, badge, role, email } = req.body;
+    // Issue #11: enforce 8-char minimum consistently
+    if (password && password.length < 8)
+      return res.status(400).json({ error: "Password must be at least 8 characters" });
     const hash = password ? await bcrypt.hash(password, 12) : null;
 
-    // Create the global user record
     const { rows: [user] } = await client.query(
       `INSERT INTO users (username, email, password_hash, name)
        VALUES ($1,$2,$3,$4) RETURNING id,username,email,name`,
       [username?.toLowerCase(), email?.toLowerCase()||null, hash, name]
     );
 
-    // Add to this agency with the specified role/badge
     await client.query(
       `INSERT INTO user_agencies (user_id, agency_id, role, badge)
        VALUES ($1,$2,$3,$4)`,
@@ -515,7 +619,6 @@ app.post("/api/users", auth, adminOnly, async (req, res) => {
   } finally { client.release(); }
 });
 
-// Add an existing (globally known) user to this agency
 app.post("/api/users/add-existing", auth, adminOnly, async (req, res) => {
   try {
     const { user_id, role, badge } = req.body;
@@ -534,7 +637,7 @@ app.post("/api/users/add-existing", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Update a user's agency-specific fields (role, badge) and/or global fields (name, username, email)
+// Issue #3 fix: verify target user belongs to admin's agency before any global field update
 app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
   const client = await pool.connect();
   try {
@@ -542,7 +645,16 @@ app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
     const uid = req.params.id;
     const { role, badge, name, username, email, new_password } = req.body;
 
-    // Update agency membership fields
+    // Verify target user is a member of this admin's agency (cross-agency protection)
+    const { rows: [memberCheck] } = await client.query(
+      "SELECT 1 FROM user_agencies WHERE user_id=$1 AND agency_id=$2",
+      [uid, req.user.agency_id]
+    );
+    if (!memberCheck) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "User not in this agency" });
+    }
+
     if (role !== undefined || badge !== undefined) {
       const { rows: [ua] } = await client.query(
         `UPDATE user_agencies
@@ -555,12 +667,19 @@ app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
       if (!ua) { await client.query("ROLLBACK"); return res.status(404).json({ error: "User not in this agency" }); }
     }
 
-    // Update global user identity fields (including optional password reset)
     const userUpdates = []; const uParams = [];
     if (name)         { uParams.push(name);                              userUpdates.push(`name=$${uParams.length}`); }
     if (username)     { uParams.push(username.toLowerCase());            userUpdates.push(`username=$${uParams.length}`); }
     if (email)        { uParams.push(email.toLowerCase());               userUpdates.push(`email=$${uParams.length}`); }
-    if (new_password) { uParams.push(await bcrypt.hash(new_password,12)); userUpdates.push(`password_hash=$${uParams.length}`); }
+    if (new_password) {
+      // Issue #11: enforce 8-char minimum in admin reset path too
+      if (new_password.length < 8) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      }
+      uParams.push(await bcrypt.hash(new_password, 12));
+      userUpdates.push(`password_hash=$${uParams.length}`);
+    }
     if (userUpdates.length) {
       uParams.push(uid);
       await client.query(`UPDATE users SET ${userUpdates.join(",")} WHERE id=$${uParams.length}`, uParams);
@@ -568,7 +687,6 @@ app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
 
     await client.query("COMMIT");
 
-    // Return merged result
     const { rows: [merged] } = await pool.query(
       `SELECT u.id, u.username, u.email, u.name, u.avatar, ua.role, ua.badge
        FROM users u JOIN user_agencies ua ON ua.user_id=u.id AND ua.agency_id=$2
@@ -583,7 +701,6 @@ app.patch("/api/users/:id", auth, adminOnly, async (req, res) => {
   } finally { client.release(); }
 });
 
-// Remove a user from this agency (does not delete the global user account)
 app.delete("/api/users/:id", auth, adminOnly, async (req, res) => {
   try {
     if (parseInt(req.params.id) === req.user.id)
@@ -624,9 +741,12 @@ app.post("/api/inventory", auth, adminOnly, async (req, res) => {
 
 app.patch("/api/inventory/:id/minqty", auth, adminOnly, async (req, res) => {
   try {
+    const minQty = parseFloat(req.body.minQty);
+    if (isNaN(minQty) || minQty < 0)
+      return res.status(400).json({ error: "minQty must be a non-negative number" });
     const { rows } = await pool.query(
       "UPDATE inventory SET min_qty=$1 WHERE id=$2 AND agency_id=$3 RETURNING *",
-      [req.body.minQty, req.params.id, req.user.agency_id]
+      [minQty, req.params.id, req.user.agency_id]
     );
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -643,10 +763,9 @@ app.get("/api/pending", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post("/api/pending", auth, async (req, res) => {
+app.post("/api/pending", auth, authLimiter, async (req, res) => {
   const d = req.body;
 
-  // Non-admin users must confirm password on every administration
   if (req.user.role !== "admin") {
     if (!d.confirmPassword)
       return res.status(400).json({ error: "Password confirmation is required to administer medication." });
@@ -665,7 +784,10 @@ app.post("/api/pending", auth, async (req, res) => {
       [d.stock, d.drug, d.conc, req.user.agency_id]
     );
     if (!inv[0]) return res.status(404).json({ error: "Drug not found in this stock" });
-    if (inv[0].qty < parseFloat(d.doseQty))
+    const doseQty = parseFloat(d.doseQty);
+    if (isNaN(doseQty) || doseQty <= 0)
+      return res.status(400).json({ error: "Invalid dose quantity" });
+    if (inv[0].qty < doseQty)
       return res.status(400).json({ error: "Insufficient inventory" });
 
     const { rows } = await client.query(
@@ -675,14 +797,14 @@ app.post("/api/pending", auth, async (req, res) => {
         hospital_record_num,witness,waste_amt,waste_witness,waste_reason,logged_by,agency_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        RETURNING *`,
-      [d.stock,d.drug,d.conc,d.dose,d.doseQty,d.route,d.runId,d.patientName,
+      [d.stock,d.drug,d.conc,d.dose,doseQty,d.route,d.runId,d.patientName,
        d.complaint,d.providerNum,d.providerName,d.mdName,d.mdSig,
        d.receivingHospital,d.hospitalRecordNum,d.witness,
        d.wasteAmt||0,d.wasteWitness||"",d.wasteReason||"",req.user.username,req.user.agency_id]
     );
     await client.query(
       "UPDATE inventory SET qty=qty-$1,updated_at=NOW() WHERE stock=$2 AND drug=$3 AND conc=$4 AND agency_id=$5",
-      [d.doseQty,d.stock,d.drug,d.conc,req.user.agency_id]
+      [doseQty,d.stock,d.drug,d.conc,req.user.agency_id]
     );
     await client.query("COMMIT");
     res.status(201).json(rows[0]);
@@ -770,10 +892,12 @@ app.get("/api/administrations", auth, async (req, res) => {
     let q = "SELECT * FROM administrations WHERE agency_id=$1";
     const params = [req.user.agency_id];
 
-    if (year)   { params.push(year);          q += ` AND EXTRACT(YEAR  FROM created_at)=$${params.length}`; }
-    if (month)  { params.push(parseInt(month)+1); q += ` AND EXTRACT(MONTH FROM created_at)=$${params.length}`; }
-    if (stock)  { params.push(stock);         q += ` AND stock=$${params.length}`; }
-    if (status) { params.push(status);        q += ` AND status=$${params.length}`; }
+    if (year)  { params.push(year);             q += ` AND EXTRACT(YEAR  FROM created_at)=$${params.length}`; }
+    if (month !== undefined && month !== "") {
+      params.push(parseInt(month)+1);           q += ` AND EXTRACT(MONTH FROM created_at)=$${params.length}`;
+    }
+    if (stock)  { params.push(stock);           q += ` AND stock=$${params.length}`; }
+    if (status) { params.push(status);          q += ` AND status=$${params.length}`; }
     if (req.user.role !== "admin") {
       params.push(req.user.username);
       q += ` AND (logged_by=$${params.length} OR status='verified')`;
@@ -788,12 +912,16 @@ app.get("/api/administrations", auth, async (req, res) => {
 });
 
 // ─── PURCHASES ────────────────────────────────────────────────────────────────
+// Issue #12: added month filter so client doesn't have to fetch whole year
 app.get("/api/purchases", auth, adminOnly, async (req, res) => {
   try {
-    const { year } = req.query;
+    const { year, month } = req.query;
     let q = "SELECT * FROM purchases WHERE agency_id=$1";
     const params = [req.user.agency_id];
-    if (year) { params.push(year); q += ` AND EXTRACT(YEAR FROM created_at)=$${params.length}`; }
+    if (year)  { params.push(year);             q += ` AND EXTRACT(YEAR  FROM created_at)=$${params.length}`; }
+    if (month !== undefined && month !== "") {
+      params.push(parseInt(month)+1);           q += ` AND EXTRACT(MONTH FROM created_at)=$${params.length}`;
+    }
     q += " ORDER BY created_at DESC";
     const { rows } = await pool.query(q, params);
     res.json(rows);
@@ -836,12 +964,16 @@ app.post("/api/purchases", auth, adminOnly, async (req, res) => {
 });
 
 // ─── TRANSFERS ────────────────────────────────────────────────────────────────
+// Issue #12: added month filter
 app.get("/api/transfers", auth, async (req, res) => {
   try {
-    const { year } = req.query;
+    const { year, month } = req.query;
     let q = "SELECT * FROM transfers WHERE agency_id=$1";
     const params = [req.user.agency_id];
-    if (year) { params.push(year); q += ` AND EXTRACT(YEAR FROM created_at)=$${params.length}`; }
+    if (year)  { params.push(year);             q += ` AND EXTRACT(YEAR  FROM created_at)=$${params.length}`; }
+    if (month !== undefined && month !== "") {
+      params.push(parseInt(month)+1);           q += ` AND EXTRACT(MONTH FROM created_at)=$${params.length}`;
+    }
     if (req.user.role !== "admin") q += " AND from_stock != 'Main Stock' AND to_stock != 'Main Stock'";
     q += " ORDER BY created_at DESC";
     const { rows } = await pool.query(q, params);
@@ -857,34 +989,39 @@ app.post("/api/transfers", auth, async (req, res) => {
     if (req.user.role !== "admin" && (d.fromStock === "Main Stock" || d.toStock === "Main Stock"))
       return res.status(403).json({ error: "Users cannot access Main Stock" });
 
+    const qty = parseFloat(d.qty);
+    if (isNaN(qty) || qty <= 0)
+      return res.status(400).json({ error: "Invalid transfer quantity" });
+
     const { rows: fromInv } = await client.query(
       "SELECT qty FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
       [d.fromStock,d.drug,d.conc,req.user.agency_id]
     );
-    if (!fromInv[0] || fromInv[0].qty < parseFloat(d.qty))
+    if (!fromInv[0] || fromInv[0].qty < qty)
       return res.status(400).json({ error: "Insufficient inventory in source stock" });
 
     const { rows } = await client.query(
       `INSERT INTO transfers (from_stock,to_stock,drug,conc,unit,qty,transferred_by,witness,logged_by,agency_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [d.fromStock,d.toStock,d.drug,d.conc,d.unit||"mL",d.qty,d.transferredBy,d.witness,req.user.username,req.user.agency_id]
+      [d.fromStock,d.toStock,d.drug,d.conc,d.unit||"mL",qty,d.transferredBy,d.witness,req.user.username,req.user.agency_id]
     );
     await client.query(
       "UPDATE inventory SET qty=qty-$1,updated_at=NOW() WHERE stock=$2 AND drug=$3 AND conc=$4 AND agency_id=$5",
-      [d.qty,d.fromStock,d.drug,d.conc,req.user.agency_id]
+      [qty,d.fromStock,d.drug,d.conc,req.user.agency_id]
     );
     const { rows: dest } = await client.query(
       "SELECT id FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
       [d.toStock,d.drug,d.conc,req.user.agency_id]
     );
     if (dest[0]) {
-      await client.query("UPDATE inventory SET qty=qty+$1,updated_at=NOW() WHERE id=$2", [d.qty,dest[0].id]);
+      await client.query("UPDATE inventory SET qty=qty+$1,updated_at=NOW() WHERE id=$2", [qty,dest[0].id]);
     } else {
+      // Issue #17 fix: inherit min_qty from source stock instead of hardcoding 3
       await client.query(
         `INSERT INTO inventory (stock,drug,conc,unit,qty,min_qty,manufacturer,lot,supplier,supplier_dea,agency_id)
-         SELECT $1,drug,conc,unit,$2,3,manufacturer,lot,supplier,supplier_dea,$3
+         SELECT $1,drug,conc,unit,$2,min_qty,manufacturer,lot,supplier,supplier_dea,$3
          FROM inventory WHERE stock=$4 AND drug=$5 AND conc=$6 AND agency_id=$3`,
-        [d.toStock,d.qty,req.user.agency_id,d.fromStock,d.drug,d.conc]
+        [d.toStock,qty,req.user.agency_id,d.fromStock,d.drug,d.conc]
       );
     }
     await client.query("COMMIT");
@@ -896,12 +1033,16 @@ app.post("/api/transfers", auth, async (req, res) => {
 });
 
 // ─── WASTE ────────────────────────────────────────────────────────────────────
+// Issue #12: added month filter
 app.get("/api/waste", auth, async (req, res) => {
   try {
-    const { year } = req.query;
+    const { year, month } = req.query;
     let q = "SELECT * FROM waste WHERE agency_id=$1";
     const params = [req.user.agency_id];
-    if (year) { params.push(year); q += ` AND EXTRACT(YEAR FROM created_at)=$${params.length}`; }
+    if (year)  { params.push(year);             q += ` AND EXTRACT(YEAR  FROM created_at)=$${params.length}`; }
+    if (month !== undefined && month !== "") {
+      params.push(parseInt(month)+1);           q += ` AND EXTRACT(MONTH FROM created_at)=$${params.length}`;
+    }
     if (req.user.role !== "admin") q += " AND stock != 'Main Stock'";
     q += " ORDER BY created_at DESC";
     const { rows } = await pool.query(q, params);
@@ -917,14 +1058,18 @@ app.post("/api/waste", auth, async (req, res) => {
     if (req.user.role !== "admin" && d.stock === "Main Stock")
       return res.status(403).json({ error: "Users cannot access Main Stock" });
 
+    const qty = parseFloat(d.qty);
+    if (isNaN(qty) || qty <= 0)
+      return res.status(400).json({ error: "Invalid waste quantity" });
+
     const { rows } = await client.query(
       `INSERT INTO waste (stock,drug,conc,unit,qty,reason,disposed_by,witness,method,logged_by,agency_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [d.stock,d.drug,d.conc,d.unit||"mL",d.qty,d.reason,d.disposedBy,d.witness,d.method,req.user.username,req.user.agency_id]
+      [d.stock,d.drug,d.conc,d.unit||"mL",qty,d.reason,d.disposedBy,d.witness,d.method,req.user.username,req.user.agency_id]
     );
     await client.query(
       "UPDATE inventory SET qty=GREATEST(0,qty-$1),updated_at=NOW() WHERE stock=$2 AND drug=$3 AND conc=$4 AND agency_id=$5",
-      [d.qty,d.stock,d.drug,d.conc,req.user.agency_id]
+      [qty,d.stock,d.drug,d.conc,req.user.agency_id]
     );
     await client.query("COMMIT");
     res.status(201).json(rows[0]);
@@ -992,7 +1137,7 @@ app.post("/api/monthly-logs", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── EXPORTS ─────────────────────────────────────────────────────────────────
+// ─── EXPORTS ──────────────────────────────────────────────────────────────────
 app.get("/api/export/doh3850", auth, adminOnly, async (req, res) => {
   try {
     const { year, month } = req.query;
@@ -1078,9 +1223,9 @@ app.get("/api/export/annual", auth, adminOnly, async (req, res) => {
     const { rows: purchases } = await pool.query(`SELECT * FROM purchases WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,[req.user.agency_id,year]);
     const { rows: waste }     = await pool.query(`SELECT * FROM waste WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,[req.user.agency_id,year]);
     const summary = {};
-    for (const a of admins) { const k=`${a.drug}|${a.conc}`; if(!summary[k]) summary[k]={drug:a.drug,conc:a.conc,administered:0,purchased:0,wasted:0}; summary[k].administered+=parseFloat(a.dose_qty||0); }
+    for (const a of admins)    { const k=`${a.drug}|${a.conc}`; if(!summary[k]) summary[k]={drug:a.drug,conc:a.conc,administered:0,purchased:0,wasted:0}; summary[k].administered+=parseFloat(a.dose_qty||0); }
     for (const p of purchases) { const k=`${p.drug}|${p.conc}`; if(!summary[k]) summary[k]={drug:p.drug,conc:p.conc,administered:0,purchased:0,wasted:0}; summary[k].purchased+=parseFloat(p.qty||0); }
-    for (const w of waste) { const k=`${w.drug}|${w.conc}`; if(!summary[k]) summary[k]={drug:w.drug,conc:w.conc,administered:0,purchased:0,wasted:0}; summary[k].wasted+=parseFloat(w.qty||0); }
+    for (const w of waste)     { const k=`${w.drug}|${w.conc}`; if(!summary[k]) summary[k]={drug:w.drug,conc:w.conc,administered:0,purchased:0,wasted:0}; summary[k].wasted+=parseFloat(w.qty||0); }
     const lines = [
       `"NARCOTRACK — ${req.user.agency_name} — ANNUAL CONTROLLED SUBSTANCE REPORT"`,
       `"Year: ${year}"`,`"Generated: ${new Date().toLocaleString("en-US")}"`,`"NYS 10 NYCRR §80.136"`,`""`,
@@ -1097,101 +1242,10 @@ app.get("/api/export/annual", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── Single-record exports ────────────────────────────────────────────────────
-
-// DOH-3850 for a single administration record
-app.get("/api/export/doh3850/record/:id", auth, adminOnly, async (req, res) => {
-  try {
-    const { rows: [r] } = await pool.query(
-      "SELECT * FROM administrations WHERE id=$1 AND agency_id=$2",
-      [req.params.id, req.user.agency_id]
-    );
-    if (!r) return res.status(404).json({ error: "Record not found" });
-    const headers = ["Date","Time","Stock Location","Drug Name","Concentration",
-      "Dose Administered","Quantity Withdrawn (mL)","Route","Run / Call ID",
-      "Patient Name","Chief Complaint","AEMT Provider #","Provider Name",
-      "Ordering Physician","MD Authorization","Receiving Hospital","Hospital Record #",
-      "Witness","Waste Amount","Waste Witness","Waste Reason","Submitted By","Verified By","Date Verified","Verify Note"];
-    const d = new Date(r.created_at);
-    const row = [
-      d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
-      r.stock, r.drug, r.conc, r.dose, r.dose_qty, r.route, r.run_id, r.patient_name, r.complaint,
-      r.provider_num, r.provider_name, r.md_name, r.md_sig, r.receiving_hospital, r.hospital_record_num,
-      r.witness, r.waste_amt||0, r.waste_witness||"", r.waste_reason||"",
-      r.logged_by, r.verified_by||"",
-      r.verified_at ? new Date(r.verified_at).toLocaleDateString("en-US") : "", r.verify_note||""
-    ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="DOH-3850_Record_${r.run_id||r.id}.csv"`);
-    res.send([headers.map(h=>`"${h}"`).join(","), row].join("\r\n"));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// DOH-3851 for a single purchase record
-app.get("/api/export/doh3851/purchase/:id", auth, adminOnly, async (req, res) => {
-  try {
-    const { rows: [r] } = await pool.query(
-      "SELECT * FROM purchases WHERE id=$1 AND agency_id=$2",
-      [req.params.id, req.user.agency_id]
-    );
-    if (!r) return res.status(404).json({ error: "Record not found" });
-    const { rows: inventory } = await pool.query(
-      "SELECT * FROM inventory WHERE agency_id=$1 ORDER BY stock,drug", [req.user.agency_id]
-    );
-    const headers = ["Record Type","Date","Time","Stock","Drug","Concentration","Qty","Unit",
-      "Supplier","DEA #","Manufacturer","Lot","Received/Transferred By","Witness","From Stock","To Stock","Logged By"];
-    const d = new Date(r.created_at);
-    const row = ["Purchase", d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
-      r.stock, r.drug, r.conc, r.qty, r.unit||"mL", r.supplier, r.supplier_dea,
-      r.manufacturer, r.lot, r.received_by, "", "", "", r.logged_by
-    ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
-    const csvRows = [headers.map(h=>`"${h}"`).join(","), row, `""`,
-      `"CURRENT INVENTORY — ${new Date().toLocaleDateString("en-US")}"`,
-      ["Stock","Drug","Conc","Qty","Unit","Manufacturer","Lot","Supplier","Supplier DEA"].map(h=>`"${h}"`).join(","),
-      ...inventory.map(i=>[i.stock,i.drug,i.conc,i.qty,i.unit,i.manufacturer,i.lot,i.supplier,i.supplier_dea]
-        .map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(","))
-    ];
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="DOH-3851_Purchase_${r.drug.replace(/\s+/g,"_")}_${r.id}.csv"`);
-    res.send(csvRows.join("\r\n"));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// DOH-3851 for a single transfer record
-app.get("/api/export/doh3851/transfer/:id", auth, adminOnly, async (req, res) => {
-  try {
-    const { rows: [r] } = await pool.query(
-      "SELECT * FROM transfers WHERE id=$1 AND agency_id=$2",
-      [req.params.id, req.user.agency_id]
-    );
-    if (!r) return res.status(404).json({ error: "Record not found" });
-    const { rows: inventory } = await pool.query(
-      "SELECT * FROM inventory WHERE agency_id=$1 ORDER BY stock,drug", [req.user.agency_id]
-    );
-    const headers = ["Record Type","Date","Time","Stock","Drug","Concentration","Qty","Unit",
-      "Supplier","DEA #","Manufacturer","Lot","Received/Transferred By","Witness","From Stock","To Stock","Logged By"];
-    const d = new Date(r.created_at);
-    const row = ["Transfer", d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
-      r.to_stock, r.drug, r.conc, r.qty, r.unit||"mL", r.from_stock, "",
-      "", "", r.transferred_by, r.witness||"", r.from_stock, r.to_stock, r.logged_by
-    ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
-    const csvRows = [headers.map(h=>`"${h}"`).join(","), row, `""`,
-      `"CURRENT INVENTORY — ${new Date().toLocaleDateString("en-US")}"`,
-      ["Stock","Drug","Conc","Qty","Unit","Manufacturer","Lot","Supplier","Supplier DEA"].map(h=>`"${h}"`).join(","),
-      ...inventory.map(i=>[i.stock,i.drug,i.conc,i.qty,i.unit,i.manufacturer,i.lot,i.supplier,i.supplier_dea]
-        .map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(","))
-    ];
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="DOH-3851_Transfer_${r.drug.replace(/\s+/g,"_")}_${r.id}.csv"`);
-    res.send(csvRows.join("\r\n"));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── SYSTEM ADMIN ROUTES — require global_role = 'sysadmin' ──────────────────
+// ─── SYSTEM ADMIN ROUTES ──────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// All agencies with user counts and basic stats
 app.get("/api/sysadmin/agencies", auth, sysAdminOnly, async (req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -1207,7 +1261,6 @@ app.get("/api/sysadmin/agencies", auth, sysAdminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Create a new agency
 app.post("/api/sysadmin/agencies", auth, sysAdminOnly, async (req, res) => {
   try {
     const { name, slug, primary_color, nav_color, accent_color, stocks } = req.body;
@@ -1226,7 +1279,6 @@ app.post("/api/sysadmin/agencies", auth, sysAdminOnly, async (req, res) => {
   }
 });
 
-// Update agency — colors, name, slug, stocks, tab_config
 app.patch("/api/sysadmin/agencies/:id", auth, sysAdminOnly, async (req, res) => {
   try {
     const { name, slug, primary_color, nav_color, accent_color, stocks, tab_config } = req.body;
@@ -1254,20 +1306,33 @@ app.patch("/api/sysadmin/agencies/:id", auth, sysAdminOnly, async (req, res) => 
   }
 });
 
-// Delete an agency (only if empty — no users, no records)
+// Issue #9 fix: check all FK-constrained tables before deleting an agency
 app.delete("/api/sysadmin/agencies/:id", auth, sysAdminOnly, async (req, res) => {
   try {
     const id = req.params.id;
-    const { rows: [cnt] } = await pool.query(
-      "SELECT COUNT(*)::int AS n FROM user_agencies WHERE agency_id=$1", [id]
-    );
-    if (cnt.n > 0) return res.status(400).json({ error: `Cannot delete — ${cnt.n} user(s) still assigned to this agency. Remove them first.` });
+    const checks = [
+      ["user_agencies",           "assigned users"],
+      ["inventory",               "inventory records"],
+      ["pending_administrations", "pending administration records"],
+      ["administrations",         "administration records"],
+      ["purchases",               "purchase records"],
+      ["transfers",               "transfer records"],
+      ["waste",                   "waste records"],
+      ["audits",                  "audit records"],
+      ["monthly_logs",            "monthly log entries"],
+    ];
+    for (const [table, label] of checks) {
+      const { rows: [cnt] } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM ${table} WHERE agency_id=$1`, [id]
+      );
+      if (cnt.n > 0)
+        return res.status(400).json({ error: `Cannot delete — agency has ${cnt.n} ${label}. Remove all records first.` });
+    }
     await pool.query("DELETE FROM agencies WHERE id=$1", [id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// All users globally with their agency memberships
 app.get("/api/sysadmin/users", auth, sysAdminOnly, async (req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -1285,13 +1350,17 @@ app.get("/api/sysadmin/users", auth, sysAdminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Promote / demote sysadmin, or reset password
 app.patch("/api/sysadmin/users/:id", auth, sysAdminOnly, async (req, res) => {
   try {
     const { global_role, password } = req.body;
     const updates = []; const params = [];
     if (global_role !== undefined) { params.push(global_role || null); updates.push(`global_role=$${params.length}`); }
-    if (password) { params.push(await bcrypt.hash(password, 12)); updates.push(`password_hash=$${params.length}`); }
+    if (password) {
+      if (password.length < 8)
+        return res.status(400).json({ error: "Password must be at least 8 characters" });
+      params.push(await bcrypt.hash(password, 12));
+      updates.push(`password_hash=$${params.length}`);
+    }
     if (!updates.length) return res.json({ ok: true });
     params.push(req.params.id);
     const { rows: [u] } = await pool.query(
@@ -1302,15 +1371,12 @@ app.patch("/api/sysadmin/users/:id", auth, sysAdminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Add existing user to any agency (sysadmin)
 app.post("/api/sysadmin/agencies/:agencyId/users", auth, sysAdminOnly, async (req, res) => {
   try {
     const { user_id, role, badge } = req.body;
     if (!user_id) return res.status(400).json({ error: "user_id is required" });
-    // Verify user exists
     const { rows: [u] } = await pool.query("SELECT id, name FROM users WHERE id=$1", [user_id]);
     if (!u) return res.status(404).json({ error: "User not found" });
-    // Verify agency exists
     const { rows: [ag] } = await pool.query("SELECT id FROM agencies WHERE id=$1", [req.params.agencyId]);
     if (!ag) return res.status(404).json({ error: "Agency not found" });
     await pool.query(
@@ -1323,7 +1389,6 @@ app.post("/api/sysadmin/agencies/:agencyId/users", auth, sysAdminOnly, async (re
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Remove user from any agency (sysadmin)
 app.delete("/api/sysadmin/agencies/:agencyId/users/:userId", auth, sysAdminOnly, async (req, res) => {
   try {
     await pool.query(
