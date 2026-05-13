@@ -1551,7 +1551,7 @@ function AuditsTab({ user }) {
   }, [year]);
   useEffect(() => { load(); }, [load]);
 
-  const stockDrugs  = inv[stock] || [];
+  const stockDrugs  = (inv[stock] || []).filter(d => parseFloat(d.qty) > 0);
 
   async function submit(e) {
     e.preventDefault();
@@ -2625,7 +2625,7 @@ function WeeklyRoundTab({ user }) {
     const defs = {};
     stocks.forEach((stock, si) => {
       defs[si] = {};
-      (data[stock] || []).forEach(d => {
+      (data[stock] || []).filter(d => parseFloat(d.qty) > 0).forEach(d => {
         defs[si][d.id] = { counted: String(d.qty), seal: "intact", condition: "good" };
       });
     });
@@ -2642,7 +2642,7 @@ function WeeklyRoundTab({ user }) {
   function collectIssues(resultsSnap) {
     const issues = [];
     stocks.forEach((stock, si) => {
-      (inv[stock] || []).forEach(d => {
+      (inv[stock] || []).filter(d => parseFloat(d.qty) > 0).forEach(d => {
         const r = resultsSnap[si]?.[d.id];
         if (!r) return;
         const counted = parseFloat(r.counted);
@@ -2662,7 +2662,7 @@ function WeeklyRoundTab({ user }) {
     try {
       const dateLabel = new Date().toLocaleDateString("en-US");
       await Promise.all(stocks.map((stock, si) => {
-        const drugs       = inv[stock] || [];
+        const drugs       = (inv[stock] || []).filter(d => parseFloat(d.qty) > 0);
         const stockResults = drugs.map(d => {
           const r       = results[si]?.[d.id] || { counted: String(d.qty), seal: "intact", condition: "good" };
           const counted = parseFloat(r.counted ?? d.qty);
