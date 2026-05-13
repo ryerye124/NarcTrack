@@ -699,15 +699,6 @@ function InspectModal({ record, type, onClose }) {
   const dateStr = d.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const timeStr = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
-  async function exportRecord(form) {
-    let path;
-    if (form === "3850" || type === "admin" && !form)  path = `/api/export/doh3850/record/${record.id}`;
-    if (form === "4004")                               path = `/api/export/doh4004/record/${record.id}`;
-    if (type === "purchase")                           path = `/api/export/doh3851/purchase/${record.id}`;
-    if (type === "transfer")                           path = `/api/export/doh3851/transfer/${record.id}`;
-    await downloadExport(path);
-  }
-
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9999,
                   display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
@@ -792,36 +783,15 @@ function InspectModal({ record, type, onClose }) {
         {/* Footer */}
         <div style={{ padding: "14px 24px", borderTop: "1px solid #e2e8f0",
                       display: "flex", gap: 10, justifyContent: "flex-end",
-                      flexWrap: "wrap", background: "#f8fafc" }}>
+                      background: "#f8fafc" }}>
+          <span style={{ fontSize: 12, color: "#94a3b8", alignSelf: "center", marginRight: "auto" }}>
+            Use the DOH Exports tab to generate form CSVs.
+          </span>
           <button onClick={onClose}
             style={{ padding: "8px 18px", borderRadius: 6, border: "1px solid #cbd5e1",
                      background: "#fff", color: "#475569", cursor: "pointer", fontSize: 13 }}>
             Close
           </button>
-          {type === "admin" && (
-            <>
-              <button onClick={() => exportRecord("3850")}
-                style={{ padding: "8px 18px", borderRadius: 6, border: "none",
-                         background: "#0ea5e9", color: "#fff", cursor: "pointer",
-                         fontWeight: 700, fontSize: 13 }}>
-                ⬇ DOH-3850
-              </button>
-              <button onClick={() => exportRecord("4004")}
-                style={{ padding: "8px 18px", borderRadius: 6, border: "none",
-                         background: "#7c3aed", color: "#fff", cursor: "pointer",
-                         fontWeight: 700, fontSize: 13 }}>
-                ⬇ DOH-4004
-              </button>
-            </>
-          )}
-          {type !== "admin" && (
-            <button onClick={() => exportRecord()}
-              style={{ padding: "8px 20px", borderRadius: 6, border: "none",
-                       background: "#7c3aed", color: "#fff", cursor: "pointer",
-                       fontWeight: 700, fontSize: 13 }}>
-              ⬇ DOH-3851
-            </button>
-          )}
         </div>
       </div>
     </div>
@@ -884,7 +854,7 @@ function AdminLogTab({ user }) {
         </label>
         <button style={{ ...S.btnPrimary, alignSelf: "flex-end" }} onClick={load}>Refresh</button>
       </div>
-      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it and export as DOH-3850.</p>
+      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it. Generate DOH exports from the DOH Exports tab.</p>
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
@@ -983,7 +953,7 @@ function PurchasesTab({ user }) {
           </form>
         </div>
       )}
-      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it and export as DOH-3851.</p>
+      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it. Generate DOH exports from the DOH Exports tab.</p>
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
@@ -1123,7 +1093,7 @@ function TransfersTab({ user }) {
           </form>
         </div>
       )}
-      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it and export as DOH-3851.</p>
+      <p style={{ fontSize: 12, color: "#94a3b8", margin: "-4px 0 8px" }}>Click any row to inspect it. Generate DOH exports from the DOH Exports tab.</p>
       {loading ? <div style={S.loading}>Loading…</div> : (
         <div style={S.card}>
           <table style={S.tbl}>
@@ -1438,7 +1408,6 @@ function MonthlyLogsTab({ user }) {
   const [counts,    setCounts   ] = useState({ admins: 0, purchases: 0, transfers: 0, waste: 0 });
   const [err,       setErr      ] = useState("");
   const [msg,       setMsg      ] = useState("");
-  const [exporting, setExporting] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1493,14 +1462,6 @@ function MonthlyLogsTab({ user }) {
     } catch (ex) { setErr(ex.message); }
   }
 
-  // BUG-007 fix: removed unused `color` parameter
-  async function doExport(type) {
-    setExporting(type); setErr("");
-    try { await downloadExport(`/api/export/${type}?year=${selYear}&month=${selMonth}`); }
-    catch (ex) { setErr(ex.message); }
-    finally { setExporting(""); }
-  }
-
   return (
     <div style={S.page}>
       <h2 style={S.h2}>Monthly Logs</h2>
@@ -1551,31 +1512,13 @@ function MonthlyLogsTab({ user }) {
         </form>
       </div>
 
-      {/* DOH Export Buttons */}
-      <div style={S.card}>
-        <h3 style={S.h3}>NYS DOH Exports — {MONTHS[selMonth]} {selYear}</h3>
-        <p style={{ fontSize: 13, color: "#64748b", margin: "0 0 16px" }}>
-          Downloads pre-formatted CSV files mapped to NYS DOH form columns. Open in Excel via File → Open → Comma delimited.
+      {/* DOH Exports pointer */}
+      <div style={{ ...S.card, background: "#f0f9ff", border: "1px solid #bae6fd" }}>
+        <p style={{ margin: 0, fontSize: 13, color: "#0369a1" }}>
+          <strong>DOH form exports</strong> (3850, 3851, 4004, 3848, Annual) are available in the{" "}
+          <strong>DOH Exports</strong> tab. Forms are generated as running ledgers per drug and date
+          range — not per month — to match how the physical forms work.
         </p>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <button style={S.btnExport("#0ea5e9")} onClick={() => doExport("doh3850")} disabled={!!exporting}>
-            {exporting === "doh3850" ? "Generating…" : "⬇ DOH-3850 — Administration Record"}
-          </button>
-          <button style={S.btnExport("#7c3aed")} onClick={() => doExport("doh3851")} disabled={!!exporting}>
-            {exporting === "doh3851" ? "Generating…" : "⬇ DOH-3851 — Inventory / Purchase Record"}
-          </button>
-          <button style={S.btnExport("#6d28d9")} onClick={() => doExport("doh4004")} disabled={!!exporting}>
-            {exporting === "doh4004" ? "Generating…" : "⬇ DOH-4004 — Controlled Substance Utilization"}
-          </button>
-          <button style={S.btnExport("#0f766e")} onClick={async () => {
-            setExporting("annual"); setErr("");
-            try { await downloadExport(`/api/export/annual?year=${selYear}`); }
-            catch (ex) { setErr(ex.message); }
-            finally { setExporting(""); }
-          }} disabled={!!exporting}>
-            {exporting === "annual" ? "Generating…" : `⬇ Annual Report — ${selYear}`}
-          </button>
-        </div>
       </div>
 
       {/* Log history */}
@@ -2224,6 +2167,150 @@ function AgencySettingsTab() {
   );
 }
 
+// ─── DOH Exports Tab ──────────────────────────────────────────────────────────
+function ExportsTab({ user }) {
+  const [inv,  setInv ] = useState([]);
+  const [busy, setBusy] = useState("");
+  const [err,  setErr ] = useState("");
+
+  useEffect(() => { api("/api/inventory").then(setInv).catch(() => {}); }, []);
+
+  const allStocks = getStocks(user);
+  const substocks = allStocks.filter(s => s !== "Main Stock");
+  const drugs = [...new Set(inv.map(i => i.drug))].sort();
+
+  const now      = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+  const ago30    = new Date(now - 30 * 24 * 3600 * 1000).toISOString().split("T")[0];
+
+  const [f3850,   setF3850  ] = useState({ drug: "",  from: ago30,   to: todayStr });
+  const [f3851,   setF3851  ] = useState({ stock: "", drug: "", from: ago30, to: todayStr });
+  const [f4004,   setF4004  ] = useState({ drug: "",  from: ago30,   to: todayStr });
+  const [f3848,   setF3848  ] = useState({ year: String(now.getFullYear()), half: "1" });
+  const [fAnnual, setFAnnual] = useState({ year: String(now.getFullYear()) });
+
+  async function doExport(type, params) {
+    setBusy(type); setErr("");
+    try {
+      await downloadExport(`/api/export/${type}?${new URLSearchParams(params)}`);
+    } catch (ex) { setErr(ex.message); }
+    finally { setBusy(""); }
+  }
+
+  const ExportCard = ({ title, desc, color, children, onDownload, disabled }) => (
+    <div style={S.card}>
+      <h3 style={S.h3}>{title}</h3>
+      <p style={{ fontSize: 12, color: "#64748b", margin: "0 0 14px" }}>{desc}</p>
+      <div style={S.form3}>{children}</div>
+      <button style={{ ...S.btnExport(color), marginTop: 12, opacity: disabled ? 0.5 : 1 }}
+        disabled={disabled || !!busy} onClick={onDownload}>
+        {busy === title ? "Generating…" : `⬇ Download ${title}`}
+      </button>
+    </div>
+  );
+
+  return (
+    <div style={S.page}>
+      <h2 style={S.h2}>NYS DOH Form Exports</h2>
+      <p style={{ fontSize: 13, color: "#64748b", marginBottom: 6 }}>
+        All files are CSV. Open in Excel via <em>File → Open → Comma delimited</em>.
+        Quantities are shown in mL (as recorded) and mg (as required on DOH forms).
+        Each DOH form is a running ledger — select a date range covering the entries you need.
+      </p>
+      {err && <div style={S.errBox}>{err}</div>}
+
+      <ExportCard
+        title="DOH-3850" color="#0ea5e9"
+        desc="Main Stock → Sub-Stock distribution log. One form per drug. Records every transfer out of Main Stock. File a new sheet per lot received."
+        disabled={!f3850.drug}
+        onDownload={() => doExport("doh3850", f3850)}>
+        <label style={S.label}>Drug
+          <select style={S.input} value={f3850.drug} onChange={e => setF3850(p => ({ ...p, drug: e.target.value }))}>
+            <option value="">— select drug —</option>
+            {drugs.map(d => <option key={d}>{d}</option>)}
+          </select>
+        </label>
+        <label style={S.label}>From Date
+          <input type="date" style={S.input} value={f3850.from} onChange={e => setF3850(p => ({ ...p, from: e.target.value }))} />
+        </label>
+        <label style={S.label}>To Date
+          <input type="date" style={S.input} value={f3850.to} onChange={e => setF3850(p => ({ ...p, to: e.target.value }))} />
+        </label>
+      </ExportCard>
+
+      <ExportCard
+        title="DOH-3851" color="#7c3aed"
+        desc="Sub-Stock running ledger per drug. Shows every event (restocks in, administrations out, waste out) with running balance in mg."
+        disabled={!f3851.stock || !f3851.drug}
+        onDownload={() => doExport("doh3851", f3851)}>
+        <label style={S.label}>Stock Location
+          <select style={S.input} value={f3851.stock} onChange={e => setF3851(p => ({ ...p, stock: e.target.value }))}>
+            <option value="">— select stock —</option>
+            {allStocks.map(s => <option key={s}>{s}</option>)}
+          </select>
+        </label>
+        <label style={S.label}>Drug
+          <select style={S.input} value={f3851.drug} onChange={e => setF3851(p => ({ ...p, drug: e.target.value }))}>
+            <option value="">— select drug —</option>
+            {drugs.map(d => <option key={d}>{d}</option>)}
+          </select>
+        </label>
+        <label style={S.label}>From Date
+          <input type="date" style={S.input} value={f3851.from} onChange={e => setF3851(p => ({ ...p, from: e.target.value }))} />
+        </label>
+        <label style={S.label}>To Date
+          <input type="date" style={S.input} value={f3851.to} onChange={e => setF3851(p => ({ ...p, to: e.target.value }))} />
+        </label>
+      </ExportCard>
+
+      <ExportCard
+        title="DOH-4004" color="#059669"
+        desc="Controlled substance utilization record per drug. Current inventory balance across all stocks, all verified administrations with mg quantities."
+        disabled={!f4004.drug}
+        onDownload={() => doExport("doh4004", f4004)}>
+        <label style={S.label}>Drug
+          <select style={S.input} value={f4004.drug} onChange={e => setF4004(p => ({ ...p, drug: e.target.value }))}>
+            <option value="">— select drug —</option>
+            {drugs.map(d => <option key={d}>{d}</option>)}
+          </select>
+        </label>
+        <label style={S.label}>From Date
+          <input type="date" style={S.input} value={f4004.from} onChange={e => setF4004(p => ({ ...p, from: e.target.value }))} />
+        </label>
+        <label style={S.label}>To Date
+          <input type="date" style={S.input} value={f4004.to} onChange={e => setF4004(p => ({ ...p, to: e.target.value }))} />
+        </label>
+      </ExportCard>
+
+      <ExportCard
+        title="DOH-3848" color="#dc2626"
+        desc="Semi-annual report submitted to BNE and Bureau of EMS within 30 days of June 30 (H1) or December 31 (H2). Includes full drug activity summary, inventory, and all detail records."
+        onDownload={() => doExport("doh3848", f3848)}>
+        <label style={S.label}>Year
+          <input type="number" style={S.input} value={f3848.year} min="2020" max="2099"
+            onChange={e => setF3848(p => ({ ...p, year: e.target.value }))} />
+        </label>
+        <label style={S.label}>Reporting Period
+          <select style={S.input} value={f3848.half} onChange={e => setF3848(p => ({ ...p, half: e.target.value }))}>
+            <option value="1">H1 — January through June</option>
+            <option value="2">H2 — July through December</option>
+          </select>
+        </label>
+      </ExportCard>
+
+      <ExportCard
+        title="Annual Summary" color="#475569"
+        desc="Full-year internal summary across all drugs. Not a DOH-required form — for internal records and self-audits."
+        onDownload={() => doExport("annual", fAnnual)}>
+        <label style={S.label}>Year
+          <input type="number" style={S.input} value={fAnnual.year} min="2020" max="2099"
+            onChange={e => setFAnnual(p => ({ ...p, year: e.target.value }))} />
+        </label>
+      </ExportCard>
+    </div>
+  );
+}
+
 // ─── Default tab configuration (used when agency has no custom tab_config) ────
 const DEFAULT_TAB_CONFIG = [
   { id: "inventory",    label: "Inventory",          icon: "📦", adminOnly: true,  visible: true },
@@ -2235,6 +2322,7 @@ const DEFAULT_TAB_CONFIG = [
   { id: "waste",        label: "Waste",              icon: "🗑️", adminOnly: false, visible: true },
   { id: "audits",       label: "Audits",             icon: "🔍", adminOnly: false, visible: true },
   { id: "monthly-logs", label: "Monthly Logs",       icon: "📅", adminOnly: true,  visible: true },
+  { id: "exports",      label: "DOH Exports",        icon: "📤", adminOnly: true,  visible: true },
   { id: "users",        label: "Users",              icon: "👥", adminOnly: true,  visible: true },
   { id: "agency-settings", label: "Agency Settings",  icon: "⚙️", adminOnly: true,  visible: true },
   { id: "profile",         label: "My Profile",        icon: "👤", adminOnly: false, visible: true },
@@ -2283,6 +2371,7 @@ function MainApp({ user, onLogout }) {
       case "waste":        return <WasteTab     user={user} />;
       case "audits":       return <AuditsTab    user={user} />;
       case "monthly-logs": return <MonthlyLogsTab user={user} />;
+      case "exports":      return <ExportsTab user={user} />;
       case "users":        return <UsersTab currentUser={user} />;
       case "agency-settings": return <AgencySettingsTab />;
       case "profile":         return <ProfileTab user={user} onAvatarUpdate={setNavAvatarSrc} />;

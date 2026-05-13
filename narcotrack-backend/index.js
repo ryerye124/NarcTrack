@@ -1230,197 +1230,405 @@ async function getAgencyMeta(agency_id, res) {
   }
   return ag;
 }
+// ─── Export helpers ───────────────────────────────────────────────────────────
+
+// Convert mL quantity to mg using concentration string (e.g. "10mg/mL", "50mcg/mL")
+function toMg(qty, conc_str) {
+  const m = String(conc_str || "").match(/([\d.]+)\s*(mcg|mg)/i);
+  if (!m) return parseFloat(qty) || 0;
+  const val    = parseFloat(m[1]);
+  const isMcg  = m[2].toLowerCase() === "mcg";
+  const mL     = parseFloat(qty) || 0;
+  return isMcg ? +(mL * val / 1000).toFixed(4) : +(mL * val).toFixed(4);
+}
+
+function csvCell(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
+function csvRow(...vals) { return vals.map(csvCell).join(","); }
+
+// ─── DOH-3850 — Main Stock → Substock Distribution Log ───────────────────────
+// Per drug, date range — records every transfer out of Main Stock.
+// Params: drug, from (YYYY-MM-DD), to (YYYY-MM-DD)
 app.get("/api/export/doh3850", auth, adminOnly, async (req, res) => {
   try {
     const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
-    const { year, month } = req.query;
-    if (!year || month === undefined) return res.status(400).json({ error: "year and month required" });
-    const { rows } = await pool.query(
-      `SELECT * FROM administrations WHERE status='verified' AND agency_id=$1
-       AND EXTRACT(YEAR FROM created_at)=$2 AND EXTRACT(MONTH FROM created_at)=$3
-       ORDER BY created_at ASC`,
-      [req.user.agency_id, year, parseInt(month)+1]
-    );
-    const headers = ["Date","Time","Stock Location","Drug Name","Concentration",
-      "Dose Administered","Quantity Withdrawn (mL)","Route","Run / Call ID",
-      "Patient Name","Chief Complaint","AEMT Provider #","Provider Name",
-      "Ordering Physician","MD Authorization","Receiving Hospital","Hospital Record #",
-      "Witness","Waste Amount","Waste Witness","Waste Reason","Submitted By","Verified By","Date Verified","Verify Note"];
-    const csvRows = rows.map(r => {
-      const d = new Date(r.created_at);
-      return [d.toLocaleDateString("en-US"),d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
-        r.stock,r.drug,r.conc,r.dose,r.dose_qty,r.route,r.run_id,r.patient_name,r.complaint,
-        r.provider_num,r.provider_name,r.md_name,r.md_sig,r.receiving_hospital,r.hospital_record_num,
-        r.witness,r.waste_amt||0,r.waste_witness||"",r.waste_reason||"",r.logged_by,r.verified_by,
-        r.verified_at ? new Date(r.verified_at).toLocaleDateString("en-US") : "",r.verify_note||""]
-        .map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
-    });
-    const mn = ["January","February","March","April","May","June","July","August","September","October","November","December"][parseInt(month)];
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="DOH-3850_${mn}_${year}.csv"`);
-    res.send([headers.map(h=>`"${h}"`).join(","),...csvRows].join("\r\n"));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
+    const { drug, from, to } = req.query;
+    if (!drug || !from || !to) return res.status(400).json({ error: "drug, from, and to are required" });
 
-app.get("/api/export/doh3851", auth, adminOnly, async (req, res) => {
-  try {
-    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
-    const { year, month } = req.query;
-    if (!year || month === undefined) return res.status(400).json({ error: "year and month required" });
-    const mn1 = parseInt(month)+1;
-    const { rows: purchases } = await pool.query(
-      `SELECT 'Purchase' as record_type,created_at,stock,drug,conc,qty,unit,supplier,supplier_dea,
-              manufacturer,lot,received_by,logged_by,NULL as from_stock,NULL as to_stock,NULL as transferred_by,NULL as witness
-       FROM purchases WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 AND EXTRACT(MONTH FROM created_at)=$3`,
-      [req.user.agency_id,year,mn1]
-    );
     const { rows: transfers } = await pool.query(
-      `SELECT 'Transfer' as record_type,created_at,to_stock as stock,drug,conc,qty,unit,NULL as supplier,
-              NULL as supplier_dea,NULL as manufacturer,NULL as lot,NULL as received_by,logged_by,
-              from_stock,to_stock,transferred_by,witness
-       FROM transfers WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 AND EXTRACT(MONTH FROM created_at)=$3`,
-      [req.user.agency_id,year,mn1]
-    );
-    const { rows: inventory } = await pool.query(
-      "SELECT * FROM inventory WHERE agency_id=$1 ORDER BY stock,drug",[req.user.agency_id]
-    );
-    const headers = ["Record Type","Date","Time","Stock","Drug","Concentration","Qty","Unit",
-      "Supplier","DEA #","Manufacturer","Lot","Received/Transferred By","Witness","From Stock","To Stock","Logged By"];
-    const allRows = [...purchases,...transfers].sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
-    const csvRows = allRows.map(r => {
-      const d = new Date(r.created_at);
-      return [r.record_type,d.toLocaleDateString("en-US"),d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
-        r.stock,r.drug,r.conc,r.qty,r.unit||"mL",r.supplier||r.from_stock||"",r.supplier_dea||"",
-        r.manufacturer||"",r.lot||"",r.received_by||r.transferred_by||"",r.witness||"",
-        r.from_stock||"",r.to_stock||"",r.logged_by]
-        .map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
-    });
-    csvRows.push(`""`);
-    csvRows.push(`"CURRENT INVENTORY — ${new Date().toLocaleDateString("en-US")}"`);
-    csvRows.push(["Stock","Drug","Conc","Qty","Unit","Manufacturer","Lot","Supplier","Supplier DEA"].map(h=>`"${h}"`).join(","));
-    for (const i of inventory) {
-      csvRows.push([i.stock,i.drug,i.conc,i.qty,i.unit,i.manufacturer,i.lot,i.supplier,i.supplier_dea]
-        .map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(","));
-    }
-    const mn = ["January","February","March","April","May","June","July","August","September","October","November","December"][parseInt(month)];
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="DOH-3851_${mn}_${year}.csv"`);
-    res.send([headers.map(h=>`"${h}"`).join(","),...csvRows].join("\r\n"));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// DOH-4004 — Controlled Substance Utilization (per-encounter individual records)
-app.get("/api/export/doh4004", auth, adminOnly, async (req, res) => {
-  try {
-    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
-    const { year, month } = req.query;
-    if (!year || month === undefined) return res.status(400).json({ error: "year and month required" });
-    const { rows } = await pool.query(
-      `SELECT * FROM administrations WHERE status='verified' AND agency_id=$1
-       AND EXTRACT(YEAR FROM created_at)=$2 AND EXTRACT(MONTH FROM created_at)=$3
+      `SELECT * FROM transfers
+       WHERE agency_id=$1 AND from_stock='Main Stock' AND drug=$2
+         AND created_at >= $3 AND created_at < ($4::date + INTERVAL '1 day')
        ORDER BY created_at ASC`,
-      [req.user.agency_id, year, parseInt(month)+1]
+      [req.user.agency_id, drug, from, to]
     );
-    const headers = [
-      "Date","Time","Run / Call ID","Stock Location",
-      "Drug Name","Concentration","Dose Administered","Volume Withdrawn (mL)","Route",
-      "Patient Name","Chief Complaint",
-      "AEMT Provider Name","AEMT Provider #","Ordering Physician","MD Authorization",
-      "Receiving Hospital","Hospital Record #",
-      "Witness","Waste Amount (mL)","Waste Witness","Waste Reason",
-      "Logged By","Verified By","Date Verified","Verify Note"
-    ];
-    const csvRows = rows.map(r => {
-      const d = new Date(r.created_at);
-      return [
-        d.toLocaleDateString("en-US"), d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}),
-        r.run_id, r.stock, r.drug, r.conc, r.dose, r.dose_qty, r.route,
-        r.patient_name, r.complaint||"",
-        r.provider_name, r.provider_num, r.md_name, r.md_sig||"",
-        r.receiving_hospital, r.hospital_record_num||"",
-        r.witness, r.waste_amt||0, r.waste_witness||"", r.waste_reason||"",
-        r.logged_by, r.verified_by||"",
-        r.verified_at ? new Date(r.verified_at).toLocaleDateString("en-US") : "",
-        r.verify_note||""
-      ].map(v=>`"${String(v??"").replace(/"/g,'""')}"`).join(",");
-    });
-    const mn = ["January","February","March","April","May","June","July","August","September","October","November","December"][parseInt(month)];
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="DOH-4004_${mn}_${year}.csv"`);
-    res.send([headers.map(h=>`"${h}"`).join(","),...csvRows].join("\r\n"));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
 
-// DOH-4004 single-record export
-app.get("/api/export/doh4004/record/:id", auth, adminOnly, async (req, res) => {
-  try {
-    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
-    const { rows: [r] } = await pool.query(
-      "SELECT * FROM administrations WHERE id=$1 AND agency_id=$2",
-      [req.params.id, req.user.agency_id]
+    const { rows: [inv] } = await pool.query(
+      `SELECT conc, lot, manufacturer FROM inventory
+       WHERE agency_id=$1 AND stock='Main Stock' AND drug=$2 LIMIT 1`,
+      [req.user.agency_id, drug]
     );
-    if (!r) return res.status(404).json({ error: "Record not found" });
-    const d = new Date(r.created_at);
+    const conc = transfers[0]?.conc || inv?.conc || "";
+
     const lines = [
-      `"NYS DOH-4004 — Controlled Substance Utilization Record"`,
-      `"Agency: ${req.user.agency_name}"`,
-      `"Generated: ${new Date().toLocaleString("en-US")}"`,`""`,
-      `"Date","${d.toLocaleDateString("en-US")}"`,
-      `"Time","${d.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}"`,
-      `"Run / Call ID","${r.run_id}"`,
-      `"Stock Location","${r.stock}"`,`""`,
-      `"Drug Name","${r.drug}"`,
-      `"Concentration","${r.conc}"`,
-      `"Dose Administered","${r.dose}"`,
-      `"Volume Withdrawn","${r.dose_qty} mL"`,
-      `"Route","${r.route}"`,`""`,
-      `"Patient Name","${r.patient_name}"`,
-      `"Chief Complaint","${r.complaint||""}"`,
-      `"Receiving Hospital","${r.receiving_hospital}"`,
-      `"Hospital Record #","${r.hospital_record_num||""}"`,`""`,
-      `"AEMT Provider Name","${r.provider_name}"`,
-      `"AEMT Provider #","${r.provider_num}"`,
-      `"Ordering Physician","${r.md_name}"`,
-      `"MD Authorization","${r.md_sig||""}"`,`""`,
-      `"Witness","${r.witness}"`,
-      `"Waste Amount","${r.waste_amt||0} mL"`,
-      `"Waste Witness","${r.waste_witness||""}"`,
-      `"Waste Reason","${r.waste_reason||""}"`,`""`,
-      `"Logged By","${r.logged_by}"`,
-      `"Verified By","${r.verified_by||""}"`,
-      `"Date Verified","${r.verified_at ? new Date(r.verified_at).toLocaleDateString("en-US") : ""}"`,
-      `"Verify Note","${r.verify_note||""}"`
+      csvRow("NYS DOH-3850 — CONTROLLED SUBSTANCE DISTRIBUTION RECORD"),
+      csvRow(`Agency: ${ag.name}`, `Agency Code: ${ag.agency_code}`),
+      csvRow(`DEA Registration: ${ag.dea_number}`, `CS License: ${ag.cs_license}`),
+      csvRow(`CS Agent: ${ag.cs_agent_name}`, `Generated: ${new Date().toLocaleString("en-US")}`),
+      csvRow(`Drug: ${drug}`, `Concentration: ${conc}`, `Lot: ${inv?.lot || ""}`, `Manufacturer: ${inv?.manufacturer || ""}`),
+      csvRow(`Period: ${from} to ${to}`),
+      csvRow(""),
+      csvRow("Date","Time","From Stock","To Stock","Qty (mL)","Qty (mg)","Transferred By","Witness","Logged By"),
     ];
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="DOH-4004_Record_${r.run_id||r.id}.csv"`);
+
+    let totalMl = 0, totalMg = 0;
+    for (const r of transfers) {
+      const d  = new Date(r.created_at);
+      const mg = toMg(r.qty, r.conc || conc);
+      totalMl += parseFloat(r.qty || 0);
+      totalMg += mg;
+      lines.push(csvRow(
+        d.toLocaleDateString("en-US"),
+        d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        r.from_stock, r.to_stock,
+        parseFloat(r.qty || 0).toFixed(2), mg.toFixed(2),
+        r.transferred_by, r.witness, r.logged_by
+      ));
+    }
+    lines.push(csvRow(""));
+    lines.push(csvRow("TOTALS", "", "", "", totalMl.toFixed(2), totalMg.toFixed(2)));
+
+    const slug = drug.replace(/\s+/g, "_");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="DOH-3850_${slug}_${from}_${to}.csv"`);
     res.send(lines.join("\r\n"));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── DOH-3851 — Substock Running Ledger ──────────────────────────────────────
+// Per stock + drug, date range — running ledger of all events with balance in mg.
+// Events: transfers in (+), verified administrations (-), waste (-).
+// Params: stock, drug, from (YYYY-MM-DD), to (YYYY-MM-DD)
+app.get("/api/export/doh3851", auth, adminOnly, async (req, res) => {
+  try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
+    const { stock, drug, from, to } = req.query;
+    if (!stock || !drug || !from || !to)
+      return res.status(400).json({ error: "stock, drug, from, and to are required" });
+
+    const dateFilter = "AND created_at >= $4 AND created_at < ($5::date + INTERVAL '1 day')";
+    const base = [req.user.agency_id, stock, drug, from, to];
+
+    const { rows: ins } = await pool.query(
+      `SELECT created_at, 'Restock' AS event_type, qty, conc,
+              transferred_by AS actor, witness, NULL::text AS run_id, NULL::text AS patient_name
+       FROM transfers WHERE agency_id=$1 AND to_stock=$2 AND drug=$3 ${dateFilter} ORDER BY created_at`,
+      base
+    );
+    const { rows: outs } = await pool.query(
+      `SELECT created_at, 'Administration' AS event_type, dose_qty AS qty, conc,
+              provider_name AS actor, witness, run_id, patient_name
+       FROM administrations WHERE agency_id=$1 AND stock=$2 AND drug=$3 AND status='verified' ${dateFilter} ORDER BY created_at`,
+      base
+    );
+    const { rows: wst } = await pool.query(
+      `SELECT created_at, 'Waste' AS event_type, qty, conc,
+              disposed_by AS actor, witness, NULL::text AS run_id, NULL::text AS patient_name
+       FROM waste WHERE agency_id=$1 AND stock=$2 AND drug=$3 ${dateFilter} ORDER BY created_at`,
+      base
+    );
+
+    const { rows: [inv] } = await pool.query(
+      `SELECT qty, conc FROM inventory WHERE agency_id=$1 AND stock=$2 AND drug=$3 LIMIT 1`,
+      [req.user.agency_id, stock, drug]
+    );
+    const conc = inv?.conc || outs[0]?.conc || ins[0]?.conc || "";
+
+    const events = [
+      ...ins.map(r  => ({ ...r, sign:  1 })),
+      ...outs.map(r => ({ ...r, sign: -1 })),
+      ...wst.map(r  => ({ ...r, sign: -1 })),
+    ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    const lines = [
+      csvRow("NYS DOH-3851 — CONTROLLED SUBSTANCE SUBSTOCK RUNNING LEDGER"),
+      csvRow(`Agency: ${ag.name}`, `Agency Code: ${ag.agency_code}`),
+      csvRow(`DEA Registration: ${ag.dea_number}`, `CS License: ${ag.cs_license}`),
+      csvRow(`CS Agent: ${ag.cs_agent_name}`, `Generated: ${new Date().toLocaleString("en-US")}`),
+      csvRow(`Stock Location: ${stock}`, `Drug: ${drug}`, `Concentration: ${conc}`),
+      csvRow(`Period: ${from} to ${to}`),
+      csvRow("NOTE: Enter beginning balance from prior form sheet in the Balance column of the first row."),
+      csvRow(""),
+      csvRow("Date","Time","Event","Run ID","Patient","Actor","Witness","Change (mL)","Change (mg)","Balance (mg)"),
+    ];
+
+    let balance = 0;
+    for (const r of events) {
+      const d   = new Date(r.created_at);
+      const mg  = toMg(r.qty, r.conc || conc);
+      balance  += r.sign * mg;
+      const sign = r.sign > 0 ? "+" : "-";
+      lines.push(csvRow(
+        d.toLocaleDateString("en-US"),
+        d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        r.event_type, r.run_id || "", r.patient_name || "",
+        r.actor || "", r.witness || "",
+        `${sign}${parseFloat(r.qty || 0).toFixed(2)}`,
+        `${sign}${mg.toFixed(2)}`,
+        balance.toFixed(2)
+      ));
+    }
+    lines.push(csvRow(""));
+    const invMg = toMg(inv?.qty || 0, conc);
+    lines.push(csvRow(`Current system inventory: ${inv?.qty || 0} mL = ${invMg.toFixed(2)} mg`));
+
+    const slug = (s) => s.replace(/\s+/g, "_");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition",
+      `attachment; filename="DOH-3851_${slug(stock)}_${slug(drug)}_${from}_${to}.csv"`);
+    res.send(lines.join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── DOH-4004 — Controlled Substance Utilization Record ──────────────────────
+// Per drug, date range — current inventory balance, all verified administrations.
+// Params: drug, from (YYYY-MM-DD), to (YYYY-MM-DD)
+app.get("/api/export/doh4004", auth, adminOnly, async (req, res) => {
+  try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
+    const { drug, from, to } = req.query;
+    if (!drug || !from || !to) return res.status(400).json({ error: "drug, from, and to are required" });
+
+    const { rows: admins } = await pool.query(
+      `SELECT * FROM administrations
+       WHERE agency_id=$1 AND drug=$2 AND status='verified'
+         AND created_at >= $3 AND created_at < ($4::date + INTERVAL '1 day')
+       ORDER BY created_at ASC`,
+      [req.user.agency_id, drug, from, to]
+    );
+    const { rows: invRows } = await pool.query(
+      `SELECT stock, qty, conc, lot FROM inventory WHERE agency_id=$1 AND drug=$2 ORDER BY stock`,
+      [req.user.agency_id, drug]
+    );
+
+    const conc = admins[0]?.conc || invRows[0]?.conc || "";
+    const totalInvMg   = invRows.reduce((s, r) => s + toMg(r.qty, r.conc), 0);
+    const totalUsedMg  = admins.reduce((s, r)  => s + toMg(r.dose_qty, r.conc), 0);
+    const totalWasteMg = admins.reduce((s, r)  => s + toMg(r.waste_amt || 0, r.conc), 0);
+
+    const lines = [
+      csvRow("NYS DOH-4004 — CONTROLLED SUBSTANCE UTILIZATION RECORD"),
+      csvRow(`Agency: ${ag.name}`, `Agency Code: ${ag.agency_code}`),
+      csvRow(`DEA Registration: ${ag.dea_number}`, `CS License: ${ag.cs_license}`),
+      csvRow(`CS Agent: ${ag.cs_agent_name}`, `Generated: ${new Date().toLocaleString("en-US")}`),
+      csvRow(`Drug: ${drug}`, `Concentration: ${conc}`),
+      csvRow(`Period: ${from} to ${to}`),
+      csvRow(""),
+      csvRow("CURRENT INVENTORY (ALL STOCKS)"),
+      csvRow("Stock", "Qty (mL)", "Qty (mg)", "Lot"),
+      ...invRows.map(r => csvRow(r.stock, parseFloat(r.qty||0).toFixed(2), toMg(r.qty, r.conc).toFixed(2), r.lot || "")),
+      csvRow("TOTAL", "", totalInvMg.toFixed(2), ""),
+      csvRow(""),
+      csvRow("VERIFIED ADMINISTRATION RECORDS"),
+      csvRow("Date","Time","Run ID","Stock","Dose","Volume (mL)","Volume (mg)","Waste (mL)","Waste (mg)",
+             "Route","Patient","Provider","MD","Hospital","Witness","Verified By"),
+    ];
+
+    for (const r of admins) {
+      const d = new Date(r.created_at);
+      lines.push(csvRow(
+        d.toLocaleDateString("en-US"),
+        d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        r.run_id, r.stock, r.dose,
+        parseFloat(r.dose_qty||0).toFixed(2), toMg(r.dose_qty, r.conc).toFixed(2),
+        parseFloat(r.waste_amt||0).toFixed(2), toMg(r.waste_amt||0, r.conc).toFixed(2),
+        r.route, r.patient_name, r.provider_name, r.md_name,
+        r.receiving_hospital, r.witness, r.verified_by || ""
+      ));
+    }
+
+    lines.push(csvRow(""));
+    lines.push(csvRow("PERIOD TOTALS"));
+    lines.push(csvRow("Total Administered (mg):", totalUsedMg.toFixed(2)));
+    lines.push(csvRow("Total Wasted (mg):",       totalWasteMg.toFixed(2)));
+    lines.push(csvRow("Current Inventory (mg):",  totalInvMg.toFixed(2)));
+
+    const slug = drug.replace(/\s+/g, "_");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="DOH-4004_${slug}_${from}_${to}.csv"`);
+    res.send(lines.join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── DOH-3848 — Semi-Annual Controlled Substance Report ──────────────────────
+// Submit to BNE and Bureau of EMS within 30 days of June 30 (H1) or Dec 31 (H2).
+// Params: year, half (1 = Jan–Jun, 2 = Jul–Dec)
+app.get("/api/export/doh3848", auth, adminOnly, async (req, res) => {
+  try {
+    const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
+    const { year, half } = req.query;
+    if (!year || !half) return res.status(400).json({ error: "year and half (1 or 2) are required" });
+
+    const h         = String(half);
+    const fromDate  = h === "2" ? `${year}-07-01` : `${year}-01-01`;
+    const toDate    = h === "2" ? `${year}-12-31` : `${year}-06-30`;
+    const periodLabel = h === "2" ? `July–December ${year}` : `January–June ${year}`;
+    const deadline    = h === "2" ? "December 31" : "June 30";
+
+    const { rows: admins }    = await pool.query(
+      `SELECT * FROM administrations WHERE agency_id=$1 AND status='verified'
+       AND created_at >= $2 AND created_at <= $3 ORDER BY drug, created_at`,
+      [req.user.agency_id, fromDate, toDate]
+    );
+    const { rows: purchases } = await pool.query(
+      `SELECT * FROM purchases WHERE agency_id=$1 AND created_at >= $2 AND created_at <= $3 ORDER BY drug, created_at`,
+      [req.user.agency_id, fromDate, toDate]
+    );
+    const { rows: wasteRows } = await pool.query(
+      `SELECT * FROM waste WHERE agency_id=$1 AND created_at >= $2 AND created_at <= $3 ORDER BY drug, created_at`,
+      [req.user.agency_id, fromDate, toDate]
+    );
+    const { rows: invRows }   = await pool.query(
+      `SELECT * FROM inventory WHERE agency_id=$1 ORDER BY stock, drug`,
+      [req.user.agency_id]
+    );
+
+    const drugs = {};
+    const addDrug = (drug, conc) => {
+      const k = `${drug}|${conc}`;
+      if (!drugs[k]) drugs[k] = { drug, conc, pur_mL: 0, pur_mg: 0, used_mL: 0, used_mg: 0, wst_mL: 0, wst_mg: 0 };
+      return drugs[k];
+    };
+    for (const r of purchases) { const d = addDrug(r.drug, r.conc); d.pur_mL  += parseFloat(r.qty||0);      d.pur_mg  += toMg(r.qty, r.conc); }
+    for (const r of admins)    { const d = addDrug(r.drug, r.conc); d.used_mL += parseFloat(r.dose_qty||0); d.used_mg += toMg(r.dose_qty, r.conc); }
+    for (const r of wasteRows) { const d = addDrug(r.drug, r.conc); d.wst_mL  += parseFloat(r.qty||0);      d.wst_mg  += toMg(r.qty, r.conc); }
+
+    const lines = [
+      csvRow("NYS DOH-3848 — SEMI-ANNUAL CONTROLLED SUBSTANCE REPORT"),
+      csvRow(`Agency: ${ag.name}`, `Agency Code: ${ag.agency_code}`),
+      csvRow(`DEA Registration: ${ag.dea_number}`, `CS License: ${ag.cs_license}`, `BNE License: ${ag.bne_license || ""}`),
+      csvRow(`CS Agent: ${ag.cs_agent_name}`, `Phone: ${ag.cs_agent_phone || ""}`, `Email: ${ag.cs_agent_email || ""}`),
+      csvRow(`Reporting Period: ${periodLabel}`),
+      csvRow(`Generated: ${new Date().toLocaleString("en-US")}`),
+      csvRow(`Submit to BNE and Bureau of EMS within 30 days of ${deadline}.`),
+      csvRow(""),
+      csvRow("DRUG ACTIVITY SUMMARY"),
+      csvRow("Drug","Concentration",
+             "Purchased (mL)","Purchased (mg)",
+             "Administered (mL)","Administered (mg)",
+             "Wasted (mL)","Wasted (mg)","Net Change (mg)"),
+      ...Object.values(drugs).map(d => csvRow(
+        d.drug, d.conc,
+        d.pur_mL.toFixed(2),  d.pur_mg.toFixed(2),
+        d.used_mL.toFixed(2), d.used_mg.toFixed(2),
+        d.wst_mL.toFixed(2),  d.wst_mg.toFixed(2),
+        (d.pur_mg - d.used_mg - d.wst_mg).toFixed(2)
+      )),
+      csvRow(""),
+      csvRow("CURRENT INVENTORY"),
+      csvRow("Stock","Drug","Concentration","Qty (mL)","Qty (mg)","Lot","Manufacturer"),
+      ...invRows.map(r => csvRow(
+        r.stock, r.drug, r.conc,
+        parseFloat(r.qty||0).toFixed(2), toMg(r.qty, r.conc).toFixed(2),
+        r.lot || "", r.manufacturer || ""
+      )),
+      csvRow(""),
+      csvRow(`ADMINISTRATION RECORDS (${admins.length} verified)`),
+      csvRow("Date","Run ID","Stock","Drug","Dose (mL)","Dose (mg)","Route","Patient","Provider","MD","Hospital","Witness","Verified By"),
+      ...admins.map(r => {
+        const d = new Date(r.created_at);
+        return csvRow(
+          d.toLocaleDateString("en-US"), r.run_id, r.stock, r.drug,
+          parseFloat(r.dose_qty||0).toFixed(2), toMg(r.dose_qty, r.conc).toFixed(2),
+          r.route, r.patient_name, r.provider_name, r.md_name,
+          r.receiving_hospital, r.witness, r.verified_by || ""
+        );
+      }),
+      csvRow(""),
+      csvRow(`PURCHASE RECORDS (${purchases.length})`),
+      csvRow("Date","Stock","Drug","Qty (mL)","Qty (mg)","Supplier","Supplier DEA","Manufacturer","Lot","Received By"),
+      ...purchases.map(r => {
+        const d = new Date(r.created_at);
+        return csvRow(
+          d.toLocaleDateString("en-US"), r.stock, r.drug,
+          parseFloat(r.qty||0).toFixed(2), toMg(r.qty, r.conc).toFixed(2),
+          r.supplier, r.supplier_dea, r.manufacturer, r.lot, r.received_by
+        );
+      }),
+      csvRow(""),
+      csvRow(`WASTE RECORDS (${wasteRows.length})`),
+      csvRow("Date","Stock","Drug","Qty (mL)","Qty (mg)","Reason","Disposed By","Witness","Method"),
+      ...wasteRows.map(r => {
+        const d = new Date(r.created_at);
+        return csvRow(
+          d.toLocaleDateString("en-US"), r.stock, r.drug,
+          parseFloat(r.qty||0).toFixed(2), toMg(r.qty, r.conc).toFixed(2),
+          r.reason, r.disposed_by, r.witness, r.method
+        );
+      }),
+    ];
+
+    const fileLabel = periodLabel.replace(/[^A-Za-z0-9_-]/g, "_");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="DOH-3848_${fileLabel}.csv"`);
+    res.send(lines.join("\r\n"));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Annual internal summary (not a DOH form — for internal records) ──────────
 app.get("/api/export/annual", auth, adminOnly, async (req, res) => {
   try {
     const ag = await getAgencyMeta(req.user.agency_id, res); if (!ag) return;
     const { year } = req.query;
     if (!year) return res.status(400).json({ error: "year required" });
-    const { rows: admins }    = await pool.query(`SELECT * FROM administrations WHERE status='verified' AND agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,[req.user.agency_id,year]);
-    const { rows: purchases } = await pool.query(`SELECT * FROM purchases WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,[req.user.agency_id,year]);
-    const { rows: waste }     = await pool.query(`SELECT * FROM waste WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,[req.user.agency_id,year]);
+
+    const { rows: admins }    = await pool.query(
+      `SELECT * FROM administrations WHERE status='verified' AND agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,
+      [req.user.agency_id, year]
+    );
+    const { rows: purchases } = await pool.query(
+      `SELECT * FROM purchases WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,
+      [req.user.agency_id, year]
+    );
+    const { rows: wasteRows } = await pool.query(
+      `SELECT * FROM waste WHERE agency_id=$1 AND EXTRACT(YEAR FROM created_at)=$2 ORDER BY created_at`,
+      [req.user.agency_id, year]
+    );
+
     const summary = {};
-    for (const a of admins)    { const k=`${a.drug}|${a.conc}`; if(!summary[k]) summary[k]={drug:a.drug,conc:a.conc,administered:0,purchased:0,wasted:0}; summary[k].administered+=parseFloat(a.dose_qty||0); }
-    for (const p of purchases) { const k=`${p.drug}|${p.conc}`; if(!summary[k]) summary[k]={drug:p.drug,conc:p.conc,administered:0,purchased:0,wasted:0}; summary[k].purchased+=parseFloat(p.qty||0); }
-    for (const w of waste)     { const k=`${w.drug}|${w.conc}`; if(!summary[k]) summary[k]={drug:w.drug,conc:w.conc,administered:0,purchased:0,wasted:0}; summary[k].wasted+=parseFloat(w.qty||0); }
+    for (const r of admins)    { const k=`${r.drug}|${r.conc}`; if (!summary[k]) summary[k]={drug:r.drug,conc:r.conc,adm_mL:0,adm_mg:0,pur_mL:0,pur_mg:0,wst_mL:0,wst_mg:0}; summary[k].adm_mL+=parseFloat(r.dose_qty||0); summary[k].adm_mg+=toMg(r.dose_qty,r.conc); }
+    for (const r of purchases) { const k=`${r.drug}|${r.conc}`; if (!summary[k]) summary[k]={drug:r.drug,conc:r.conc,adm_mL:0,adm_mg:0,pur_mL:0,pur_mg:0,wst_mL:0,wst_mg:0}; summary[k].pur_mL+=parseFloat(r.qty||0);      summary[k].pur_mg+=toMg(r.qty,r.conc); }
+    for (const r of wasteRows) { const k=`${r.drug}|${r.conc}`; if (!summary[k]) summary[k]={drug:r.drug,conc:r.conc,adm_mL:0,adm_mg:0,pur_mL:0,pur_mg:0,wst_mL:0,wst_mg:0}; summary[k].wst_mL+=parseFloat(r.qty||0);      summary[k].wst_mg+=toMg(r.qty,r.conc); }
+
     const lines = [
-      `"NARCOTRACK — ${req.user.agency_name} — ANNUAL CONTROLLED SUBSTANCE REPORT"`,
-      `"Year: ${year}"`,`"Generated: ${new Date().toLocaleString("en-US")}"`,`"NYS 10 NYCRR §80.136"`,`""`,
-      `"ANNUAL DRUG SUMMARY"`,
-      `"Drug","Concentration","Total Purchased","Total Administered","Total Wasted","Net Balance"`,
-      ...Object.values(summary).map(s=>`"${s.drug}","${s.conc}","${s.purchased.toFixed(2)}","${s.administered.toFixed(2)}","${s.wasted.toFixed(2)}","${(s.purchased-s.administered-s.wasted).toFixed(2)}"`),
-      `""`,`"ADMINISTRATION RECORDS (${admins.length} verified)"`,
-      `"Date","Drug","Dose","Route","Run ID","Patient","Provider","MD","Hospital","Verified By"`,
-      ...admins.map(a=>{const d=new Date(a.created_at);return `"${d.toLocaleDateString("en-US")}","${a.drug}","${a.dose}","${a.route}","${a.run_id}","${a.patient_name}","${a.provider_name}","${a.md_name}","${a.receiving_hospital}","${a.verified_by}"`;})
+      csvRow(`NARCOTRACK — ${ag.name} — ANNUAL CONTROLLED SUBSTANCE REPORT`),
+      csvRow(`Year: ${year}`, `Generated: ${new Date().toLocaleString("en-US")}`),
+      csvRow("NYS 10 NYCRR §80.136 — Internal summary only"),
+      csvRow(""),
+      csvRow("DRUG SUMMARY"),
+      csvRow("Drug","Concentration","Purchased (mL)","Purchased (mg)","Administered (mL)","Administered (mg)","Wasted (mL)","Wasted (mg)","Net (mg)"),
+      ...Object.values(summary).map(s => csvRow(
+        s.drug, s.conc,
+        s.pur_mL.toFixed(2), s.pur_mg.toFixed(2),
+        s.adm_mL.toFixed(2), s.adm_mg.toFixed(2),
+        s.wst_mL.toFixed(2), s.wst_mg.toFixed(2),
+        (s.pur_mg - s.adm_mg - s.wst_mg).toFixed(2)
+      )),
+      csvRow(""),
+      csvRow(`ADMINISTRATION RECORDS (${admins.length} verified)`),
+      csvRow("Date","Drug","Dose (mL)","Dose (mg)","Route","Run ID","Patient","Provider","MD","Hospital","Verified By"),
+      ...admins.map(r => {
+        const d = new Date(r.created_at);
+        return csvRow(
+          d.toLocaleDateString("en-US"), r.drug,
+          parseFloat(r.dose_qty||0).toFixed(2), toMg(r.dose_qty, r.conc).toFixed(2),
+          r.route, r.run_id, r.patient_name, r.provider_name, r.md_name,
+          r.receiving_hospital, r.verified_by || ""
+        );
+      }),
     ];
-    res.setHeader("Content-Type","text/csv");
-    res.setHeader("Content-Disposition",`attachment; filename="NarcTrack_Annual_${year}.csv"`);
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", `attachment; filename="NarcTrack_Annual_${year}.csv"`);
     res.send(lines.join("\r\n"));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
