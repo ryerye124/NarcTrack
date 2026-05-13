@@ -919,7 +919,7 @@ app.post("/api/pending/:id/verify", auth, adminOnly, async (req, res) => {
        p.waste_amt,p.waste_witness,p.waste_reason,
        p.logged_by,req.user.username,req.body.note||"",req.user.agency_id]
     );
-    await client.query("DELETE FROM pending_administrations WHERE id=$1", [req.params.id]);
+    await client.query("DELETE FROM pending_administrations WHERE id=$1 AND agency_id=$2", [req.params.id, req.user.agency_id]);
     await client.query("COMMIT");
     res.json({ ok: true });
   } catch (err) {
@@ -957,7 +957,7 @@ app.post("/api/pending/:id/reject", auth, adminOnly, async (req, res) => {
       "UPDATE inventory SET qty=qty+$1,updated_at=NOW() WHERE stock=$2 AND drug=$3 AND conc=$4 AND agency_id=$5",
       [p.dose_qty,p.stock,p.drug,p.conc,req.user.agency_id]
     );
-    await client.query("DELETE FROM pending_administrations WHERE id=$1", [req.params.id]);
+    await client.query("DELETE FROM pending_administrations WHERE id=$1 AND agency_id=$2", [req.params.id, req.user.agency_id]);
     await client.query("COMMIT");
     res.json({ ok: true });
   } catch (err) {
@@ -1026,14 +1026,14 @@ app.post("/api/purchases", auth, adminOnly, async (req, res) => {
     );
     if (existing[0]) {
       await client.query(
-        "UPDATE inventory SET qty=qty+$1,lot=$2,manufacturer=$3,supplier=$4,supplier_dea=$5,updated_at=NOW() WHERE id=$6",
-        [d.qty,d.lot,d.manufacturer,d.supplier,d.supplierDEA,existing[0].id]
+        "UPDATE inventory SET qty=qty+$1,lot=$2,manufacturer=$3,supplier=$4,supplier_dea=$5,updated_at=NOW() WHERE id=$6 AND agency_id=$7",
+        [d.qty,d.lot,d.manufacturer,d.supplier,d.supplierDEA,existing[0].id,req.user.agency_id]
       );
     } else {
       await client.query(
         `INSERT INTO inventory (stock,drug,conc,unit,qty,min_qty,manufacturer,lot,supplier,supplier_dea,agency_id)
-         VALUES ($1,$2,$3,$4,$5,5,$6,$7,$8,$9,$10)`,
-        [d.stock,d.drug,d.conc,d.unit,d.qty,d.manufacturer,d.lot,d.supplier,d.supplierDEA,req.user.agency_id]
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [d.stock,d.drug,d.conc,d.unit||"mL",d.qty,d.minQty||5,d.manufacturer,d.lot,d.supplier,d.supplierDEA,req.user.agency_id]
       );
     }
     await client.query("COMMIT");
@@ -1095,7 +1095,7 @@ app.post("/api/transfers", auth, async (req, res) => {
       [d.toStock,d.drug,d.conc,req.user.agency_id]
     );
     if (dest[0]) {
-      await client.query("UPDATE inventory SET qty=qty+$1,updated_at=NOW() WHERE id=$2", [qty,dest[0].id]);
+      await client.query("UPDATE inventory SET qty=qty+$1,updated_at=NOW() WHERE id=$2 AND agency_id=$3", [qty,dest[0].id,req.user.agency_id]);
     } else {
       // Issue #17 fix: inherit min_qty from source stock instead of hardcoding 3
       await client.query(

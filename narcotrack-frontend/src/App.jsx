@@ -577,7 +577,7 @@ function InventoryTab({ user }) {
 }
 
 // ─── Log Administration Tab ───────────────────────────────────────────────────
-function LogAdminTab({ user, onStockChange }) {
+function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
   const availStocks = user.role === "admin" ? getStocks(user) : getStocks(user).filter(s => s !== "Main Stock");
   const blank = () => ({
     stock: availStocks[0], drug: "", conc: "", unit: "",
@@ -604,7 +604,7 @@ function LogAdminTab({ user, onStockChange }) {
     ? calcML(form.doseAmount, form.doseUnit, form.conc)
     : null;
 
-  function onStockChange(e) {
+  function handleStockChange(e) {
     setForm(p => ({ ...p, stock: e.target.value, drug: "", conc: "", unit: "", doseAmount: "", doseUnit: "mg" }));
   }
 
@@ -625,7 +625,7 @@ function LogAdminTab({ user, onStockChange }) {
       })});
       setMsg("Administration submitted — pending admin verification.");
       setSubmitLowStock(result.low_stock || []);
-      if (result.low_stock?.length) onStockChange?.();
+      if (result.low_stock?.length) onAlertRefresh?.();
       setForm(blank());
     } catch (ex) { setErr(ex.message); }
     finally { setBusy(false); }
@@ -658,7 +658,7 @@ function LogAdminTab({ user, onStockChange }) {
 
           {/* ── Row 1: Stock / Drug / Concentration ── */}
           <label style={S.label}>Stock Location
-            <select style={S.select} value={form.stock} onChange={onStockChange} required>
+            <select style={S.select} value={form.stock} onChange={handleStockChange} required>
               {availStocks.map(s => <option key={s}>{s}</option>)}
             </select>
           </label>
@@ -1084,7 +1084,7 @@ function AdminLogTab({ user }) {
   const [records,  setRecords ] = useState([]);
   const [loading,  setLoading ] = useState(true);
   const [err,      setErr     ] = useState("");
-  const [filters,  setFilters ] = useState({ year: String(now.getFullYear()), month: String(now.getMonth()), stock: "", status: "" });
+  const [filters,  setFilters ] = useState({ year: String(now.getFullYear()), month: "", stock: "", status: "" });
   const [inspectR, setInspectR] = useState(null);
 
   const load = useCallback(async () => {
@@ -2450,7 +2450,7 @@ function AgencySettingsTab() {
 
 // ─── DOH Exports Tab ──────────────────────────────────────────────────────────
 function ExportsTab({ user }) {
-  const [inv,  setInv ] = useState([]);
+  const [inv,  setInv ] = useState({});
   const [busy, setBusy] = useState("");
   const [err,  setErr ] = useState("");
 
@@ -2944,13 +2944,16 @@ function DashboardTab({ user, onNavigate, pendingCount, lowStockItems }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api("/api/administrations?limit=6")
-      .then(data => {
-        const rows = data.records || [];
-        setRecent(rows);
+    api("/api/administrations")
+      .then(rows => {
+        setRecent(rows.slice(0, 6));
         const today = new Date().toISOString().slice(0, 10);
         setTodayCt(rows.filter(r => (r.created_at || "").slice(0, 10) === today).length);
-        setMonthCt(data.total || rows.length);
+        const now = new Date();
+        setMonthCt(rows.filter(r => {
+          const d = new Date(r.created_at);
+          return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+        }).length);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
