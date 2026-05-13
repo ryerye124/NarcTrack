@@ -402,6 +402,16 @@ function InventoryTab({ user }) {
     finally { setSavingId(null); }
   }
 
+  async function removeItem(id, drug) {
+    if (!window.confirm(`Remove ${drug} from inventory? This cannot be undone.`)) return;
+    setErr(""); setMsg("");
+    try {
+      await api(`/api/inventory/${id}`, { method: "DELETE" });
+      setMsg(`${drug} removed from inventory.`);
+      load();
+    } catch (ex) { setErr(ex.message); }
+  }
+
   function stockStatus(item) {
     const qty = parseFloat(item.qty);
     const min = parseFloat(item.min_qty);
@@ -536,8 +546,8 @@ function InventoryTab({ user }) {
             <table style={S.tbl}>
               <thead>
                 <tr>
-                  {["Drug","Conc","Qty","Unit","Min","Max","Status","Manufacturer","Lot #"].map(h =>
-                    <th key={h} style={S.th}>{h}</th>
+                  {["Drug","Conc","Qty","Unit","Min","Max","Status","Manufacturer","Lot #", ...(isAdmin ? [""] : [])].map((h,i) =>
+                    <th key={i} style={S.th}>{h}</th>
                   )}
                 </tr>
               </thead>
@@ -567,6 +577,17 @@ function InventoryTab({ user }) {
                       </td>
                       <td style={S.td}>{item.manufacturer}</td>
                       <td style={S.td}>{item.lot}</td>
+                      {isAdmin && (
+                        <td style={S.td}>
+                          {parseFloat(item.qty) <= 0 && (
+                            <button
+                              onClick={() => removeItem(item.id, item.drug)}
+                              style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#dc2626", borderRadius: 5, padding: "3px 9px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                              Remove
+                            </button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

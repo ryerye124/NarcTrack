@@ -827,6 +827,20 @@ app.patch("/api/inventory/:id/limits", auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Delete a zero-qty inventory item
+app.delete("/api/inventory/:id", auth, adminOnly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT qty FROM inventory WHERE id=$1 AND agency_id=$2",
+      [req.params.id, req.user.agency_id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+    if (parseFloat(rows[0].qty) !== 0) return res.status(400).json({ error: "Can only remove items with 0 quantity" });
+    await pool.query("DELETE FROM inventory WHERE id=$1 AND agency_id=$2", [req.params.id, req.user.agency_id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── PENDING ADMINISTRATIONS ──────────────────────────────────────────────────
 app.get("/api/pending", auth, adminOnly, async (req, res) => {
   try {
