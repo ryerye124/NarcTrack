@@ -344,7 +344,7 @@ function calcML(doseAmount, doseUnit, concStr) {
 }
 
 // ─── Inventory Tab ────────────────────────────────────────────────────────────
-function InventoryTab({ user }) {
+function InventoryTab({ user, onStockChange }) {
   const isAdmin = user.role === "admin";
   const [inv,       setInv      ] = useState({});
   const [loading,   setLoading  ] = useState(true);
@@ -409,6 +409,7 @@ function InventoryTab({ user }) {
       await api(`/api/inventory/${id}`, { method: "DELETE" });
       setMsg(`${drug} removed from inventory.`);
       load();
+      onStockChange?.();
     } catch (ex) { setErr(ex.message); }
   }
 
@@ -3222,7 +3223,7 @@ function MainApp({ user, onLogout }) {
   const renderTab = () => {
     switch (tab) {
       case "dashboard":       return <DashboardTab user={user} onNavigate={setTab} pendingCount={pendingCount} lowStockItems={lowStockItems} />;
-      case "inventory":       return <InventoryTab user={user} />;
+      case "inventory":       return <InventoryTab user={user} onStockChange={refreshAlerts} />;
       case "log-admin":       return <LogAdminTab  user={user} onStockChange={refreshAlerts} />;
       case "pending":         return <PendingTab   onStockChange={refreshAlerts} user={user} onNavigate={setTab} />;
       case "admin-log":       return <AdminLogTab  user={user} />;
