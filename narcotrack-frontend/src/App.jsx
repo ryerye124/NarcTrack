@@ -74,51 +74,86 @@ async function downloadExport(urlPath) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const S = {
-  app:        { fontFamily: "'Segoe UI', sans-serif", minHeight: "100vh", background: "#f1f5f9" },
+  // App shell
+  appShell:   { fontFamily: "'Inter','Segoe UI',sans-serif", display: "flex", height: "100vh", overflow: "hidden", background: "#f8fafc" },
+
+  // Sidebar
+  sidebar:      bg => ({ width: 232, minWidth: 232, background: bg || "#0f172a", display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }),
+  sidebarTop:   { padding: "18px 16px 14px", borderBottom: "1px solid rgba(255,255,255,.07)" },
+  sidebarLogo:  { display: "flex", alignItems: "center", gap: 9 },
+  sidebarTitle: { fontSize: 14, fontWeight: 700, color: "#f1f5f9", letterSpacing: "-0.01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  sidebarSub:   { fontSize: 10, color: "#475569", marginTop: 3, letterSpacing: ".04em", textTransform: "uppercase" },
+  sidebarNav:   { flex: 1, overflowY: "auto", padding: "6px 8px" },
+  sidebarSec:   { fontSize: 9, fontWeight: 700, color: "#475569", letterSpacing: ".1em", textTransform: "uppercase", padding: "14px 8px 5px" },
+  sidebarItem:  a => ({ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", cursor: "pointer", border: "none", width: "100%", textAlign: "left", background: a ? "rgba(59,130,246,.18)" : "transparent", color: a ? "#93c5fd" : "#94a3b8", fontWeight: a ? 600 : 400, fontSize: 13, borderRadius: 7, borderLeft: a ? "3px solid #3b82f6" : "3px solid transparent", marginBottom: 1, transition: "background .1s,color .1s" }),
+  sidebarFoot:  { padding: "12px 14px", borderTop: "1px solid rgba(255,255,255,.07)", display: "flex", alignItems: "center", gap: 10 },
+  sidebarName:  { fontSize: 13, fontWeight: 600, color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  sidebarRole:  r => ({ fontSize: 10, fontWeight: 700, color: r === "admin" ? "#818cf8" : "#38bdf8", textTransform: "uppercase", letterSpacing: ".06em" }),
+
+  // Main content
+  main:       { flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" },
+  page:       { padding: "26px 28px", maxWidth: 1080, margin: "0 auto", width: "100%", boxSizing: "border-box" },
+
+  // Cards
+  card:       { background: "#fff", borderRadius: 10, padding: 22, boxShadow: "0 1px 3px rgba(0,0,0,.06),0 0 0 1px rgba(0,0,0,.04)", marginBottom: 18 },
+
+  // Typography
+  h2:         { margin: "0 0 20px", fontSize: 22, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.02em" },
+  h3:         { margin: "0 0 14px", fontSize: 15, fontWeight: 600, color: "#1e293b" },
+
+  // Tables
+  tbl:        { width: "100%", borderCollapse: "collapse", fontSize: 13 },
+  th:         { background: "#f8fafc", padding: "8px 12px", textAlign: "left", borderBottom: "2px solid #e2e8f0", color: "#64748b", fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: ".05em" },
+  td:         { padding: "9px 12px", borderBottom: "1px solid #f1f5f9", color: "#334155", verticalAlign: "top" },
+
+  // Forms
+  form2:      { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 },
+  form3:      { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 },
+  label:      { display: "flex", flexDirection: "column", gap: 5, fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: ".05em" },
+  input:      { padding: "8px 11px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 13, outline: "none", color: "#0f172a", background: "#fff" },
+  select:     { padding: "8px 11px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 13, background: "#fff", color: "#0f172a" },
+  textarea:   { padding: "8px 11px", border: "1.5px solid #e2e8f0", borderRadius: 7, fontSize: 13, minHeight: 68, resize: "vertical", color: "#0f172a" },
+  span2:      { gridColumn: "1 / -1" },
+
+  // Buttons
+  btn:        { padding: "7px 14px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 },
+  btnPrimary: { padding: "9px 20px", borderRadius: 7, border: "none", cursor: "pointer", background: "#3b82f6", color: "#fff", fontWeight: 600, fontSize: 13 },
+  btnSuccess: { padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", background: "#22c55e", color: "#fff", fontSize: 12, fontWeight: 500 },
+  btnDanger:  { padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", background: "#ef4444", color: "#fff", fontSize: 12, fontWeight: 500 },
+  btnGray:    { padding: "6px 12px", borderRadius: 7, border: "none", cursor: "pointer", background: "#e2e8f0", color: "#475569", fontSize: 12, fontWeight: 500 },
+  btnExport:  c => ({ padding: "9px 18px", borderRadius: 7, border: "none", cursor: "pointer", background: c || "#0ea5e9", color: "#fff", fontWeight: 600, fontSize: 13 }),
+
+  // Layout helpers
+  row:        { display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" },
+  filterRow:  { display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "flex-end" },
+
+  // Status
+  errBox:     { background: "#fef2f2", color: "#dc2626", padding: "10px 14px", borderRadius: 8, marginBottom: 14, fontSize: 13, border: "1px solid #fecaca" },
+  okBox:      { background: "#f0fdf4", color: "#166534", padding: "10px 14px", borderRadius: 8, marginBottom: 14, fontSize: 13, border: "1px solid #bbf7d0" },
+  loading:    { padding: 48, textAlign: "center", color: "#94a3b8", fontSize: 14 },
+  center:     { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", fontSize: 16, color: "#64748b" },
+  pill:       ok => ({ display: "inline-block", padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: ok ? "#dcfce7" : "#fee2e2", color: ok ? "#166534" : "#dc2626" }),
+  roleBadge:  r  => ({ display: "inline-block", padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: r === "admin" ? "#ede9fe" : r === "pending" ? "#fef3c7" : "#dbeafe", color: r === "admin" ? "#7c3aed" : r === "pending" ? "#b45309" : "#1d4ed8" }),
+  statBox:    { background: "#f8fafc", borderRadius: 8, padding: 16, textAlign: "center" },
+  statNum:    { fontSize: 30, fontWeight: 700, color: "#0f172a" },
+  statLabel:  { fontSize: 11, color: "#64748b", marginTop: 3 },
+
+  // Legacy — used by sysadmin shell only
+  app:        { fontFamily: "'Inter','Segoe UI',sans-serif", minHeight: "100vh", background: "#f8fafc" },
   nav:        { background: "#1e293b", color: "#fff", padding: "0 20px", display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" },
   navTitle:   { fontWeight: 700, fontSize: 17, marginRight: 12, padding: "13px 0", whiteSpace: "nowrap" },
   navTab:     a => ({ padding: "13px 12px", cursor: "pointer", border: "none", background: "none", color: a ? "#38bdf8" : "#94a3b8", borderBottom: a ? "2px solid #38bdf8" : "2px solid transparent", fontWeight: a ? 600 : 400, fontSize: 13 }),
   navUser:    { marginLeft: "auto", fontSize: 12, color: "#94a3b8", display: "flex", alignItems: "center", gap: 8, paddingLeft: 8 },
   logoutBtn:  { background: "#ef4444", border: "none", color: "#fff", padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontSize: 12 },
-  page:       { padding: 20, maxWidth: 1200, margin: "0 auto" },
-  card:       { background: "#fff", borderRadius: 8, padding: 20, boxShadow: "0 1px 3px rgba(0,0,0,.08)", marginBottom: 16 },
-  h2:         { margin: "0 0 16px", fontSize: 20, color: "#1e293b" },
-  h3:         { margin: "0 0 14px", fontSize: 15, color: "#334155" },
-  tbl:        { width: "100%", borderCollapse: "collapse", fontSize: 13 },
-  th:         { background: "#f8fafc", padding: "8px 10px", textAlign: "left", borderBottom: "2px solid #e2e8f0", color: "#475569", fontWeight: 600 },
-  td:         { padding: "8px 10px", borderBottom: "1px solid #f1f5f9", color: "#334155" },
-  form2:      { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 },
-  form3:      { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 },
-  label:      { display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "#475569" },
-  input:      { padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 4, fontSize: 13, outline: "none" },
-  select:     { padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 4, fontSize: 13, background: "#fff" },
-  textarea:   { padding: "6px 10px", border: "1px solid #cbd5e1", borderRadius: 4, fontSize: 13, minHeight: 60, resize: "vertical" },
-  span2:      { gridColumn: "1 / -1" },
-  btn:        { padding: "7px 14px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500 },
-  btnPrimary: { padding: "8px 18px", borderRadius: 4, border: "none", cursor: "pointer", background: "#3b82f6", color: "#fff", fontWeight: 600, fontSize: 13 },
-  btnSuccess: { padding: "5px 10px", borderRadius: 4, border: "none", cursor: "pointer", background: "#22c55e", color: "#fff", fontSize: 12 },
-  btnDanger:  { padding: "5px 10px", borderRadius: 4, border: "none", cursor: "pointer", background: "#ef4444", color: "#fff", fontSize: 12 },
-  btnGray:    { padding: "5px 10px", borderRadius: 4, border: "none", cursor: "pointer", background: "#64748b", color: "#fff", fontSize: 12 },
-  btnExport:  c => ({ padding: "9px 16px", borderRadius: 4, border: "none", cursor: "pointer", background: c || "#0ea5e9", color: "#fff", fontWeight: 600, fontSize: 13 }),
-  row:        { display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" },
-  filterRow:  { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-end" },
-  errBox:     { background: "#fee2e2", color: "#dc2626", padding: "9px 12px", borderRadius: 6, marginBottom: 12, fontSize: 13 },
-  okBox:      { background: "#dcfce7", color: "#166534", padding: "9px 12px", borderRadius: 6, marginBottom: 12, fontSize: 13 },
-  loading:    { padding: 40, textAlign: "center", color: "#64748b" },
-  center:     { display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", fontSize: 16, color: "#64748b" },
-  pill:       ok => ({ display: "inline-block", padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600, background: ok ? "#dcfce7" : "#fee2e2", color: ok ? "#166534" : "#dc2626" }),
-  roleBadge:  r  => ({ display: "inline-block", padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600, background: r === "admin" ? "#ede9fe" : r === "pending" ? "#fef3c7" : "#dbeafe", color: r === "admin" ? "#7c3aed" : r === "pending" ? "#b45309" : "#1d4ed8" }),
-  statBox:    { background: "#f8fafc", borderRadius: 6, padding: 14, textAlign: "center" },
-  statNum:    { fontSize: 28, fontWeight: 700, color: "#1e293b" },
-  statLabel:  { fontSize: 11, color: "#64748b", marginTop: 2 },
+
   // Login
   loginWrap:  { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a" },
-  loginCard:  { background: "#fff", borderRadius: 12, padding: 40, width: 360, boxShadow: "0 20px 60px rgba(0,0,0,.35)" },
+  loginCard:  { background: "#fff", borderRadius: 14, padding: 40, width: 380, boxShadow: "0 25px 60px rgba(0,0,0,.4)" },
   loginTitle: { margin: "0 0 4px", fontSize: 26, fontWeight: 700, color: "#1e293b", textAlign: "center" },
   loginSub:   { margin: "0 0 24px", fontSize: 11, color: "#64748b", textAlign: "center" },
-  loginInput: { display: "block", width: "100%", padding: "10px 12px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: 14, marginBottom: 10, boxSizing: "border-box" },
-  loginBtn:   { display: "block", width: "100%", padding: 11, background: "#3b82f6", color: "#fff", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 14, cursor: "pointer", marginBottom: 10 },
-  googleBtn:  { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", padding: 11, border: "1px solid #cbd5e1", borderRadius: 6, background: "#fff", fontSize: 14, fontWeight: 500, cursor: "pointer", textDecoration: "none", color: "#334155", gap: 10, boxSizing: "border-box" },
+  loginInput: { display: "block", width: "100%", padding: "10px 12px", border: "1.5px solid #e2e8f0", borderRadius: 8, fontSize: 14, marginBottom: 10, boxSizing: "border-box", color: "#0f172a" },
+  loginBtn:   { display: "block", width: "100%", padding: 12, background: "#3b82f6", color: "#fff", border: "none", borderRadius: 8, fontWeight: 600, fontSize: 14, cursor: "pointer", marginBottom: 10 },
+  googleBtn:  { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", padding: 11, border: "1.5px solid #e2e8f0", borderRadius: 8, background: "#fff", fontSize: 14, fontWeight: 500, cursor: "pointer", textDecoration: "none", color: "#334155", gap: 10, boxSizing: "border-box" },
   divider:    { textAlign: "center", color: "#94a3b8", margin: "14px 0", fontSize: 12 },
 };
 
@@ -2780,6 +2815,166 @@ function WeeklyRoundTab({ user }) {
   );
 }
 
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+function DashboardTab({ user, onNavigate, pendingCount, lowStockItems }) {
+  const isAdmin = user.role === "admin";
+  const [recent,  setRecent ] = useState([]);
+  const [todayCt, setTodayCt] = useState(0);
+  const [monthCt, setMonthCt] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api("/api/administrations?limit=6")
+      .then(data => {
+        const rows = data.records || [];
+        setRecent(rows);
+        const today = new Date().toISOString().slice(0, 10);
+        setTodayCt(rows.filter(r => (r.created_at || "").slice(0, 10) === today).length);
+        setMonthCt(data.total || rows.length);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
+  const statCards = [
+    ...(isAdmin ? [{
+      label: "Pending Review", value: pendingCount,
+      color: pendingCount > 0 ? "#ef4444" : "#22c55e",
+      bg: pendingCount > 0 ? "#fef2f2" : "#f0fdf4",
+      border: pendingCount > 0 ? "#fecaca" : "#bbf7d0",
+      action: "pending",
+    }] : []),
+    {
+      label: "Low Stock", value: lowStockItems.length,
+      color: lowStockItems.length > 0 ? "#f59e0b" : "#22c55e",
+      bg: lowStockItems.length > 0 ? "#fffbeb" : "#f0fdf4",
+      border: lowStockItems.length > 0 ? "#fcd34d" : "#bbf7d0",
+      action: "inventory",
+    },
+    { label: "Today's Admins", value: todayCt, color: "#3b82f6", bg: "#eff6ff", border: "#bfdbfe", action: "admin-log" },
+    { label: "Month Total",    value: monthCt, color: "#8b5cf6", bg: "#f5f3ff", border: "#ddd6fe", action: "admin-log" },
+  ];
+
+  return (
+    <div style={S.page}>
+      {/* Header */}
+      <div style={{ marginBottom: 26 }}>
+        <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.02em" }}>
+          {greeting}, {user.name.split(" ")[0]}
+        </h1>
+        <p style={{ margin: 0, color: "#64748b", fontSize: 14 }}>
+          {user.agency_name || "NarcTrack EMS"} · {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+        </p>
+      </div>
+
+      {/* Stat cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(190px,1fr))", gap: 14, marginBottom: 26 }}>
+        {statCards.map((c, i) => (
+          <div key={i} onClick={() => onNavigate(c.action)}
+            style={{ background: c.bg, borderRadius: 10, padding: "18px 20px", cursor: "pointer",
+                     boxShadow: "0 1px 3px rgba(0,0,0,.05)", border: `1px solid ${c.border}` }}>
+            <div style={{ fontSize: 34, fontWeight: 800, color: c.color, lineHeight: 1 }}>{c.value}</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginTop: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{c.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Quick actions */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 28, flexWrap: "wrap" }}>
+        <button onClick={() => onNavigate("log-admin")}
+          style={{ ...S.btnPrimary, padding: "11px 22px", fontSize: 14, borderRadius: 8 }}>
+          💉 Log Drug Administration
+        </button>
+        {isAdmin && pendingCount > 0 && (
+          <button onClick={() => onNavigate("pending")}
+            style={{ ...S.btnPrimary, background: "#ef4444", padding: "11px 22px", fontSize: 14, borderRadius: 8 }}>
+            ⏳ Review {pendingCount} Pending
+          </button>
+        )}
+        {isAdmin && lowStockItems.length > 0 && (
+          <button onClick={() => onNavigate("transfers")}
+            style={{ ...S.btnPrimary, background: "#f59e0b", padding: "11px 22px", fontSize: 14, borderRadius: 8 }}>
+            📦 Restock Transfer
+          </button>
+        )}
+      </div>
+
+      {/* Bottom two-col */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+
+        {/* Recent administrations */}
+        <div style={S.card}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <h3 style={{ ...S.h3, margin: 0 }}>Recent Administrations</h3>
+            <button onClick={() => onNavigate("admin-log")}
+              style={{ ...S.btn, background: "#f1f5f9", color: "#64748b", padding: "5px 10px", fontSize: 12 }}>
+              View all →
+            </button>
+          </div>
+          {loading ? <div style={S.loading}>Loading…</div> : recent.length === 0 ? (
+            <p style={{ color: "#94a3b8", fontSize: 13, margin: 0 }}>No records yet.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+              {recent.map(r => (
+                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 0", borderBottom: "1px solid #f1f5f9" }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 8, background: "#eff6ff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>💉</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: "#0f172a" }}>{r.drug} <span style={{ fontWeight: 400, color: "#64748b" }}>{r.dose}</span></div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.patient_name} · {r.provider_name}</div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{new Date(r.created_at).toLocaleDateString()}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Stock status */}
+        <div style={S.card}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <h3 style={{ ...S.h3, margin: 0 }}>Stock Status</h3>
+            {isAdmin && <button onClick={() => onNavigate("inventory")}
+              style={{ ...S.btn, background: "#f1f5f9", color: "#64748b", padding: "5px 10px", fontSize: 12 }}>
+              Inventory →
+            </button>}
+          </div>
+          {lowStockItems.length === 0 ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0" }}>
+              <div style={{ width: 36, height: 36, borderRadius: 8, background: "#f0fdf4", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>✅</div>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, color: "#166534" }}>All levels OK</div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>No items below minimum</div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {lowStockItems.map(item => (
+                <div key={item.id} style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 18 }}>⚠️</span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: "#92400e" }}>{item.drug} — {item.stock}</div>
+                    <div style={{ fontSize: 12, color: "#b45309" }}>{item.qty} {item.unit} remaining · min {item.min_qty}</div>
+                  </div>
+                </div>
+              ))}
+              {isAdmin && (
+                <button onClick={() => onNavigate("transfers")}
+                  style={{ ...S.btn, background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, marginTop: 4 }}>
+                  Initiate Transfer →
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
 // ─── Default tab configuration (used when agency has no custom tab_config) ────
 const DEFAULT_TAB_CONFIG = [
   { id: "inventory",    label: "Inventory",          icon: "📦", adminOnly: true,  visible: true },
@@ -2801,53 +2996,89 @@ const DEFAULT_TAB_CONFIG = [
 // ─── Main App Shell ───────────────────────────────────────────────────────────
 function MainApp({ user, onLogout }) {
   const isAdmin  = user.role === "admin";
-  const navColor = user.agency_nav     || "#1e293b";
-  const accent   = user.agency_accent  || "#38bdf8";
+  const navColor = user.agency_nav || "#0f172a";
 
   const [navAvatarSrc, setNavAvatarSrc] = useState(null);
   useEffect(() => {
     api("/api/users/me").then(u => setNavAvatarSrc(u.avatar || null)).catch(() => {});
   }, []);
 
-  const [lowStockItems,     setLowStockItems    ] = useState([]);
-  const [alertsDismissed,   setAlertsDismissed  ] = useState(false);
+  const [lowStockItems, setLowStockItems] = useState([]);
+  const [pendingCount,  setPendingCount ] = useState(0);
+
   const refreshAlerts = useCallback(() => {
-    api("/api/inventory/alerts")
-      .then(items => { setLowStockItems(items); if (items.length > 0) setAlertsDismissed(false); })
-      .catch(() => {});
-  }, []);
+    api("/api/inventory/alerts").then(setLowStockItems).catch(() => {});
+    if (isAdmin) api("/api/pending").then(r => setPendingCount(r.length)).catch(() => {});
+  }, [isAdmin]);
   useEffect(() => { refreshAlerts(); }, [refreshAlerts]);
 
-  // Merge stored tab config with DEFAULT_TAB_CONFIG so newly added tabs always appear.
-  // Stored config controls visibility/order for existing tabs; new tabs are appended.
-  const tabConfig = (() => {
-    if (!user.agency_tabs || !user.agency_tabs.length) return DEFAULT_TAB_CONFIG;
-    const storedIds = new Set(user.agency_tabs.map(t => t.id));
-    const newTabs   = DEFAULT_TAB_CONFIG.filter(t => !storedIds.has(t.id));
-    return [...user.agency_tabs, ...newTabs];
-  })();
+  const [tab, setTab] = useState("dashboard");
 
-  const tabs = tabConfig
-    .filter(t => t.visible !== false)
-    .filter(t => !t.adminOnly || isAdmin);
-
-  const firstTab = tabs[0]?.id || "log-admin";
-  const [tab, setTab] = useState(firstTab);
+  // Sidebar nav groups — no tab config complexity; admin visibility handled inline
+  const navGroups = [
+    {
+      items: [
+        { id: "dashboard", label: "Dashboard", icon: "⌂" },
+      ],
+    },
+    {
+      label: "Daily",
+      items: [
+        { id: "log-admin", label: "Log Drug",  icon: "💉" },
+        ...(isAdmin ? [{ id: "pending", label: "Review", icon: "⏳", badge: pendingCount || null }] : []),
+      ],
+    },
+    {
+      label: "Records",
+      items: [
+        { id: "admin-log", label: "Admin Log", icon: "📋" },
+        ...(isAdmin ? [{ id: "inventory", label: "Inventory", icon: "📦" }] : []),
+      ],
+    },
+    ...(isAdmin ? [{
+      label: "Operations",
+      items: [
+        { id: "purchases",  label: "Purchases",  icon: "🛒" },
+        { id: "transfers",  label: "Transfers",  icon: "🔄" },
+        { id: "waste",      label: "Waste",      icon: "🗑️" },
+        { id: "audits",     label: "Audits",     icon: "🔍" },
+      ],
+    }] : []),
+    ...(isAdmin ? [{
+      label: "Reports",
+      items: [
+        { id: "weekly-round", label: "Weekly Round", icon: "🗓️" },
+        { id: "monthly-logs", label: "Monthly Logs", icon: "📅" },
+        { id: "exports",      label: "DOH Exports",  icon: "📤" },
+      ],
+    }] : []),
+    {
+      label: "Settings",
+      items: [
+        ...(isAdmin ? [
+          { id: "users",           label: "Users",   icon: "👥" },
+          { id: "agency-settings", label: "Agency",  icon: "⚙️" },
+        ] : []),
+        { id: "profile", label: "My Profile", icon: "👤" },
+      ],
+    },
+  ].filter(g => g.items.length > 0);
 
   const renderTab = () => {
     switch (tab) {
-      case "inventory":    return <InventoryTab user={user} />;
-      case "log-admin":    return <LogAdminTab  user={user} onStockChange={refreshAlerts} />;
-      case "pending":      return <PendingTab onStockChange={refreshAlerts} user={user} onNavigate={setTab} />;
-      case "admin-log":    return <AdminLogTab  user={user} />;
-      case "purchases":    return <PurchasesTab user={user} />;
-      case "transfers":    return <TransfersTab user={user} />;
-      case "waste":        return <WasteTab     user={user} />;
-      case "audits":       return <AuditsTab       user={user} />;
-      case "weekly-round": return <WeeklyRoundTab  user={user} />;
-      case "monthly-logs": return <MonthlyLogsTab user={user} />;
-      case "exports":      return <ExportsTab user={user} />;
-      case "users":        return <UsersTab currentUser={user} />;
+      case "dashboard":       return <DashboardTab user={user} onNavigate={setTab} pendingCount={pendingCount} lowStockItems={lowStockItems} />;
+      case "inventory":       return <InventoryTab user={user} />;
+      case "log-admin":       return <LogAdminTab  user={user} onStockChange={refreshAlerts} />;
+      case "pending":         return <PendingTab   onStockChange={refreshAlerts} user={user} onNavigate={setTab} />;
+      case "admin-log":       return <AdminLogTab  user={user} />;
+      case "purchases":       return <PurchasesTab user={user} />;
+      case "transfers":       return <TransfersTab user={user} />;
+      case "waste":           return <WasteTab     user={user} />;
+      case "audits":          return <AuditsTab    user={user} />;
+      case "weekly-round":    return <WeeklyRoundTab  user={user} />;
+      case "monthly-logs":    return <MonthlyLogsTab  user={user} />;
+      case "exports":         return <ExportsTab user={user} />;
+      case "users":           return <UsersTab currentUser={user} />;
       case "agency-settings": return <AgencySettingsTab />;
       case "profile":         return <ProfileTab user={user} onAvatarUpdate={setNavAvatarSrc} />;
       default:                return null;
@@ -2855,51 +3086,84 @@ function MainApp({ user, onLogout }) {
   };
 
   return (
-    <div style={S.app}>
-      <nav style={{ ...S.nav, background: navColor }}>
-        <span style={S.navTitle}>🚑 {user.agency_name || "NarcTrack EMS"}</span>
-        {tabs.map(t => (
-          <button key={t.id}
-            style={{ ...S.navTab(tab === t.id), color: tab === t.id ? accent : "#94a3b8",
-                     borderBottomColor: tab === t.id ? accent : "transparent" }}
-            onClick={() => setTab(t.id)}>
-            {t.icon && <span style={{ marginRight: 4 }}>{t.icon}</span>}{t.label}
-          </button>
-        ))}
-        <div style={S.navUser}>
-          <NavAvatar user={user} src={navAvatarSrc} />
-          <span>{user.name} · <span style={{ color: isAdmin ? "#818cf8" : accent }}>{user.role}</span></span>
-          <button style={S.logoutBtn} onClick={onLogout}>Sign Out</button>
+    <div style={S.appShell}>
+
+      {/* ── Sidebar ── */}
+      <aside style={S.sidebar(navColor)}>
+
+        {/* Agency name */}
+        <div style={S.sidebarTop}>
+          <div style={S.sidebarLogo}>
+            <span style={{ fontSize: 20 }}>🚑</span>
+            <div style={{ minWidth: 0 }}>
+              <div style={S.sidebarTitle}>{user.agency_name || "NarcTrack EMS"}</div>
+              <div style={S.sidebarSub}>§80.136 Compliant</div>
+            </div>
+          </div>
         </div>
-      </nav>
-      {lowStockItems.length > 0 && !alertsDismissed && (
-        <div style={{ background: "#7f1d1d", color: "#fef2f2", padding: "10px 20px",
-                      display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
-          <div style={{ flex: 1 }}>
-            <strong style={{ fontSize: 13 }}>Stock Attention Required — </strong>
-            <span style={{ fontSize: 13 }}>
+
+        {/* Nav */}
+        <nav style={S.sidebarNav}>
+          {navGroups.map((group, gi) => (
+            <div key={gi}>
+              {group.label && <div style={S.sidebarSec}>{group.label}</div>}
+              {group.items.map(item => (
+                <button key={item.id} style={S.sidebarItem(tab === item.id)} onClick={() => setTab(item.id)}>
+                  <span style={{ fontSize: 14, lineHeight: 1, width: 16, textAlign: "center", flexShrink: 0 }}>{item.icon}</span>
+                  <span style={{ flex: 1 }}>{item.label}</span>
+                  {item.badge ? (
+                    <span style={{ background: "#ef4444", color: "#fff", borderRadius: 20, fontSize: 10, fontWeight: 700, padding: "1px 6px", minWidth: 16, textAlign: "center" }}>
+                      {item.badge}
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
+        {/* User footer */}
+        <div style={S.sidebarFoot}>
+          {navAvatarSrc ? (
+            <img src={navAvatarSrc} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+          ) : (
+            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(59,130,246,.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#93c5fd", fontWeight: 700, flexShrink: 0 }}>
+              {(user.name?.[0] || "?").toUpperCase()}
+            </div>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={S.sidebarName}>{user.name}</div>
+            <div style={S.sidebarRole(user.role)}>{user.role}</div>
+          </div>
+          <button onClick={onLogout} title="Sign out"
+            style={{ background: "none", border: "none", cursor: "pointer", color: "#475569", fontSize: 18, padding: 4, lineHeight: 1, flexShrink: 0 }}>
+            ↩
+          </button>
+        </div>
+      </aside>
+
+      {/* ── Content ── */}
+      <main style={S.main}>
+        {lowStockItems.length > 0 && (
+          <div style={{ background: "#7f1d1d", color: "#fef2f2", padding: "9px 24px", display: "flex", alignItems: "center", gap: 10, fontSize: 13, flexShrink: 0 }}>
+            <span>⚠️</span>
+            <span style={{ flex: 1 }}>
+              <strong>Stock Alert: </strong>
               {lowStockItems.map((item, i) => (
-                <span key={item.id}>
-                  {i > 0 && " · "}
-                  <strong>{item.stock}</strong>: {item.drug} {item.conc} — {item.qty} {item.unit} remaining (min {item.min_qty})
-                </span>
+                <span key={item.id}>{i > 0 && " · "}<strong>{item.stock}</strong>: {item.drug} — {item.qty} {item.unit} left</span>
               ))}
             </span>
-            <button
-              style={{ marginLeft: 12, fontSize: 12, padding: "2px 10px", borderRadius: 4,
-                       border: "none", background: "#fef2f2", color: "#7f1d1d",
-                       cursor: "pointer", fontWeight: 600 }}
-              onClick={() => setTab("transfers")}>
-              Transfer Now
-            </button>
+            {isAdmin && (
+              <button onClick={() => setTab("transfers")}
+                style={{ background: "#fef2f2", border: "none", color: "#7f1d1d", padding: "3px 10px", borderRadius: 5, cursor: "pointer", fontWeight: 600, fontSize: 12, flexShrink: 0 }}>
+                Transfer Now
+              </button>
+            )}
           </div>
-          <button onClick={() => setAlertsDismissed(true)}
-            style={{ background: "none", border: "none", color: "#fca5a5",
-                     cursor: "pointer", fontSize: 18, lineHeight: 1, flexShrink: 0 }}>✕</button>
-        </div>
-      )}
-      {renderTab()}
+        )}
+        {renderTab()}
+      </main>
+
     </div>
   );
 }
