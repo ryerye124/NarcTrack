@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+# nvm puts CLIs in a versioned path that non-interactive shells don't see — add it explicitly
+export PATH="/Users/ryan/.nvm/versions/node/v20.20.2/bin:$PATH"
+
 REPO="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND="$REPO/narcotrack-frontend"
 BACKEND="$REPO/narcotrack-backend"
