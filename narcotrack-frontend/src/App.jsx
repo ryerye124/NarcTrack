@@ -357,7 +357,7 @@ function InventoryTab({ user, onStockChange }) {
   const stocks = getStocks(user);
   const [form, setForm] = useState({
     stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "",
-    minQty: 5, maxQty: "", manufacturer: "", lot: "", supplier: "", supplierDEA: "",
+    vialVol: "", minQty: 1, maxQty: "", manufacturer: "", lot: "", supplier: "", supplierDEA: "",
   });
 
   const load = useCallback(async () => {
@@ -368,11 +368,15 @@ function InventoryTab({ user, onStockChange }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  // Seed limit edit state from fresh inventory data
+  // Seed limit edit state from fresh inventory data — show in vials when vial_vol set
   useEffect(() => {
     const edits = {};
     Object.values(inv).flat().forEach(item => {
-      edits[item.id] = { minQty: item.min_qty ?? "", maxQty: item.max_qty ?? "" };
+      const v = item.vial_vol ? parseFloat(item.vial_vol) : null;
+      edits[item.id] = {
+        minQty: v && item.min_qty != null ? Math.round(parseFloat(item.min_qty) / v) : (item.min_qty ?? ""),
+        maxQty: v && item.max_qty != null ? Math.round(parseFloat(item.max_qty) / v) : (item.max_qty ?? ""),
+      };
     });
     setLimitEdits(edits);
   }, [inv]);
@@ -384,7 +388,7 @@ function InventoryTab({ user, onStockChange }) {
     try {
       await api("/api/inventory", { method: "POST", body: JSON.stringify(form) });
       setMsg("Drug added to inventory."); setShowAdd(false);
-      setForm({ stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "", minQty: 5, maxQty: "", manufacturer: "", lot: "", supplier: "", supplierDEA: "" });
+      setForm({ stock: stocks[0], drug: "", conc: "", unit: "mL", qty: "", vialVol: "", minQty: 1, maxQty: "", manufacturer: "", lot: "", supplier: "", supplierDEA: "" });
       load();
     } catch (ex) { setErr(ex.message); }
   }
@@ -462,10 +466,15 @@ function InventoryTab({ user, onStockChange }) {
             </label>
             <label style={S.label}>Drug Name<input style={S.input} value={form.drug} onChange={f("drug")} required /></label>
             <label style={S.label}>Concentration (e.g. 10mg/mL)<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
+            <label style={S.label}>Vial Volume (mL per vial)
+              <input style={S.input} type="number" min="0.01" step="0.01" value={form.vialVol} onChange={f("vialVol")} placeholder="e.g. 10 for 10mL vials" />
+            </label>
             <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} placeholder="mL" /></label>
-            <label style={S.label}>Initial Qty<input style={S.input} type="number" min="0" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
-            <label style={S.label}>Min Qty (alert threshold)<input style={S.input} type="number" min="0" step="0.01" value={form.minQty} onChange={f("minQty")} /></label>
-            <label style={S.label}>Max Qty (full stock)<input style={S.input} type="number" min="0" step="0.01" value={form.maxQty} onChange={f("maxQty")} placeholder="Optional" /></label>
+            <label style={S.label}>{form.vialVol ? "Initial Qty (vials)" : "Initial Qty (mL)"}
+              <input style={S.input} type="number" min="0" step={form.vialVol ? "1" : "0.01"} value={form.qty} onChange={f("qty")} required />
+            </label>
+            <label style={S.label}>{form.vialVol ? "Min (vials)" : "Min Qty (mL)"}<input style={S.input} type="number" min="0" step="1" value={form.minQty} onChange={f("minQty")} /></label>
+            <label style={S.label}>{form.vialVol ? "Max (vials)" : "Max Qty (mL)"}<input style={S.input} type="number" min="0" step="1" value={form.maxQty} onChange={f("maxQty")} placeholder="Optional" /></label>
             <label style={S.label}>Manufacturer<input style={S.input} value={form.manufacturer} onChange={f("manufacturer")} /></label>
             <label style={S.label}>Lot #<input style={S.input} value={form.lot} onChange={f("lot")} /></label>
             <label style={S.label}>Supplier<input style={S.input} value={form.supplier} onChange={f("supplier")} /></label>
@@ -488,45 +497,53 @@ function InventoryTab({ user, onStockChange }) {
             <table style={S.tbl}>
               <thead>
                 <tr>
-                  {["Drug","Concentration","Current Qty","Unit","Min Qty","Max Qty",""].map(h =>
+                  {["Drug","Concentration","Current Stock","Min","Max",""].map(h =>
                     <th key={h} style={S.th}>{h}</th>
                   )}
                 </tr>
               </thead>
               <tbody>
                 {inv[stock].map(item => {
-                  const edit = limitEdits[item.id] || { minQty: item.min_qty, maxQty: item.max_qty ?? "" };
-                  const dirty = String(edit.minQty) !== String(item.min_qty) ||
-                                String(edit.maxQty) !== String(item.max_qty ?? "");
+                  const v = item.vial_vol ? parseFloat(item.vial_vol) : null;
+                  const edit = limitEdits[item.id] || {
+                    minQty: v ? Math.round(parseFloat(item.min_qty)/v) : (item.min_qty ?? ""),
+                    maxQty: v && item.max_qty != null ? Math.round(parseFloat(item.max_qty)/v) : (item.max_qty ?? ""),
+                  };
+                  const curMinVials = v ? Math.round(parseFloat(item.min_qty)/v) : item.min_qty;
+                  const curMaxVials = v && item.max_qty != null ? Math.round(parseFloat(item.max_qty)/v) : (item.max_qty ?? "");
+                  const dirty = String(edit.minQty) !== String(curMinVials) ||
+                                String(edit.maxQty) !== String(curMaxVials);
+                  const vialCount = v ? Math.floor(parseFloat(item.qty) / v) : null;
                   return (
                     <tr key={item.id} style={{ background: dirty ? "#fefce8" : undefined }}>
                       <td style={S.td}><strong>{item.drug}</strong></td>
                       <td style={S.td}>{item.conc}</td>
                       <td style={S.td}>
-                        <strong style={{ color: parseFloat(item.qty) <= parseFloat(item.min_qty) ? "#dc2626" : "#16a34a" }}>{item.qty}</strong>
+                        <strong style={{ color: parseFloat(item.qty) <= parseFloat(item.min_qty) ? "#dc2626" : "#16a34a" }}>
+                          {vialCount !== null ? `${vialCount} vials` : `${item.qty} mL`}
+                        </strong>
                       </td>
-                      <td style={S.td}>{item.unit}</td>
                       <td style={S.td}>
                         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                           <input
                             style={{ ...S.input, width: 72, padding: "5px 8px" }}
-                            type="number" min="0" step="0.01"
+                            type="number" min="0" step="1"
                             value={edit.minQty}
                             onChange={e => setLimitEdits(p => ({ ...p, [item.id]: { ...p[item.id], minQty: e.target.value } }))}
                           />
-                          <span style={{ fontSize: 10, color: "#94a3b8" }}>alert below</span>
+                          <span style={{ fontSize: 10, color: "#94a3b8" }}>{v ? "vials" : "mL"} alert</span>
                         </div>
                       </td>
                       <td style={S.td}>
                         <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                           <input
                             style={{ ...S.input, width: 72, padding: "5px 8px" }}
-                            type="number" min="0" step="0.01"
+                            type="number" min="0" step="1"
                             value={edit.maxQty}
                             placeholder="—"
                             onChange={e => setLimitEdits(p => ({ ...p, [item.id]: { ...p[item.id], maxQty: e.target.value } }))}
                           />
-                          <span style={{ fontSize: 10, color: "#94a3b8" }}>full stock</span>
+                          <span style={{ fontSize: 10, color: "#94a3b8" }}>{v ? "vials" : "mL"} full</span>
                         </div>
                       </td>
                       <td style={S.td}>
@@ -547,7 +564,7 @@ function InventoryTab({ user, onStockChange }) {
             <table style={S.tbl}>
               <thead>
                 <tr>
-                  {["Drug","Conc","Qty","Unit","Min","Max","Status","Manufacturer","Lot #", ...(isAdmin ? [""] : [])].map((h,i) =>
+                  {["Drug","Conc","Stock","Min","Max","Status","Manufacturer","Lot #", ...(isAdmin ? [""] : [])].map((h,i) =>
                     <th key={i} style={S.th}>{h}</th>
                   )}
                 </tr>
@@ -555,22 +572,30 @@ function InventoryTab({ user, onStockChange }) {
               <tbody>
                 {inv[stock].map(item => {
                   const st = stockStatus(item);
-                  const pct = item.max_qty ? Math.min(100, Math.round((parseFloat(item.qty) / parseFloat(item.max_qty)) * 100)) : null;
+                  const v = item.vial_vol ? parseFloat(item.vial_vol) : null;
+                  const vialCount = v ? Math.floor(parseFloat(item.qty) / v) : null;
+                  const maxVials = v && item.max_qty ? Math.round(parseFloat(item.max_qty) / v) : null;
+                  const minVials = v ? Math.round(parseFloat(item.min_qty) / v) : null;
+                  const pct = maxVials !== null ? Math.min(100, Math.round((vialCount / maxVials) * 100))
+                            : item.max_qty ? Math.min(100, Math.round((parseFloat(item.qty) / parseFloat(item.max_qty)) * 100))
+                            : null;
                   return (
                     <tr key={item.id}>
                       <td style={S.td}><strong>{item.drug}</strong></td>
                       <td style={S.td}>{item.conc}</td>
                       <td style={S.td}>
-                        <strong style={{ color: st.color }}>{item.qty}</strong>
+                        <strong style={{ color: st.color }}>
+                          {vialCount !== null ? `${vialCount} vials` : `${item.qty} mL`}
+                        </strong>
+                        {v && <div style={{ fontSize: 10, color: "#94a3b8" }}>{item.qty} mL total</div>}
                         {pct !== null && (
                           <div style={{ marginTop: 4, height: 4, background: "#e2e8f0", borderRadius: 2, width: 60, overflow: "hidden" }}>
                             <div style={{ height: "100%", width: `${pct}%`, background: st.color, borderRadius: 2, transition: "width .3s" }} />
                           </div>
                         )}
                       </td>
-                      <td style={S.td}>{item.unit}</td>
-                      <td style={S.td}><span style={{ color: "#64748b" }}>{item.min_qty}</span></td>
-                      <td style={S.td}><span style={{ color: "#64748b" }}>{item.max_qty ?? <span style={{ color: "#cbd5e1" }}>—</span>}</span></td>
+                      <td style={S.td}><span style={{ color: "#64748b" }}>{minVials !== null ? `${minVials} vials` : `${item.min_qty} mL`}</span></td>
+                      <td style={S.td}><span style={{ color: "#64748b" }}>{maxVials !== null ? `${maxVials} vials` : item.max_qty ? `${item.max_qty} mL` : <span style={{ color: "#cbd5e1" }}>—</span>}</span></td>
                       <td style={S.td}>
                         <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: st.bg, color: st.color }}>
                           {st.label}
@@ -638,6 +663,12 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
     setForm(p => ({ ...p, drug: e.target.value, conc: d?.conc || "", unit: d?.unit || "", doseAmount: "", doseUnit: "mg" }));
   }
 
+  // Vial info for selected drug
+  const selectedDrug = stockDrugs.find(d => d.drug === form.drug);
+  const vialVol = selectedDrug?.vial_vol ? parseFloat(selectedDrug.vial_vol) : null;
+  const vialsAvail = vialVol ? Math.floor(parseFloat(selectedDrug.qty) / vialVol) : null;
+  const autoWaste = vialVol && mlCalc !== null ? Math.max(0, vialVol - mlCalc) : null;
+
   async function submit(e) {
     e.preventDefault();
     if (mlCalc === null) { setErr("Cannot calculate mL — check concentration format (e.g. 10mg/mL)."); return; }
@@ -691,7 +722,11 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
           <label style={S.label}>Drug
             <select style={S.select} value={form.drug} onChange={onDrugChange} required>
               <option value="">Select drug…</option>
-              {stockDrugs.map(d => <option key={d.id} value={d.drug}>{d.drug}</option>)}
+              {stockDrugs.map(d => {
+                const vv = d.vial_vol ? parseFloat(d.vial_vol) : null;
+                const vc = vv ? Math.floor(parseFloat(d.qty) / vv) : null;
+                return <option key={d.id} value={d.drug}>{d.drug}{vc !== null ? ` (${vc} vials)` : ` (${d.qty} ${d.unit})`}</option>;
+              })}
             </select>
           </label>
 
@@ -699,11 +734,7 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
             <input style={readonlyStyle} value={form.conc} readOnly placeholder="Select a drug first" />
           </label>
 
-          {/* ── Row 2: Unit / Dose Amount+Unit / mL ── */}
-          <label style={S.label}>Unit (auto-filled)
-            <input style={readonlyStyle} value={form.unit} readOnly placeholder="Auto-filled" />
-          </label>
-
+          {/* ── Row 2: Dose / Volume / Vial info ── */}
           <label style={S.label}>Dose Administered
             <div style={{ display: "flex", gap: 6 }}>
               <input
@@ -725,7 +756,7 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
             </div>
           </label>
 
-          <label style={S.label}>Volume Withdrawn (auto-calculated mL)
+          <label style={S.label}>Volume Withdrawn (auto-calculated)
             <input
               style={mlStyle}
               value={mlCalc !== null ? `${mlCalc} mL` : ""}
@@ -733,6 +764,15 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
               placeholder="Enter dose + select drug first"
             />
           </label>
+
+          {/* Vial deduction notice */}
+          {vialVol && mlCalc !== null && (
+            <div style={{ gridColumn: "1/-1", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#1e40af" }}>
+              <strong>Vial deduction:</strong> 1 full vial ({vialVol} mL) will be removed from stock.
+              {autoWaste > 0 && <> <strong>{autoWaste.toFixed(2)} mL</strong> will be auto-logged as waste (vial remainder).</>}
+              {vialsAvail !== null && <> {vialsAvail - 1} vial{vialsAvail - 1 !== 1 ? "s" : ""} will remain after this administration.</>}
+            </div>
+          )}
 
           {/* ── Remaining fields ── */}
           <label style={S.label}>Route
@@ -750,9 +790,24 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
           <label style={S.label}>Receiving Hospital<input style={S.input} value={form.receivingHospital} onChange={e => setForm(p => ({ ...p, receivingHospital: e.target.value }))} required /></label>
           <label style={S.label}>Hospital Record #<input style={S.input} value={form.hospitalRecordNum} onChange={e => setForm(p => ({ ...p, hospitalRecordNum: e.target.value }))} /></label>
           <label style={S.label}>Witness<input style={S.input} value={form.witness} onChange={e => setForm(p => ({ ...p, witness: e.target.value }))} required /></label>
-          <label style={S.label}>Waste Amount (mL)<input style={S.input} type="number" min="0" step="0.01" value={form.wasteAmt} onChange={e => setForm(p => ({ ...p, wasteAmt: e.target.value }))} /></label>
-          <label style={S.label}>Waste Witness<input style={S.input} value={form.wasteWitness} onChange={e => setForm(p => ({ ...p, wasteWitness: e.target.value }))} /></label>
-          <label style={S.label}>Waste Reason<input style={S.input} value={form.wasteReason} onChange={e => setForm(p => ({ ...p, wasteReason: e.target.value }))} /></label>
+          {vialVol ? (
+            /* Vial mode: waste is auto-calculated; just need witness confirmation */
+            <>
+              <label style={S.label}>Waste Witness
+                <input style={S.input} value={form.wasteWitness} onChange={e => setForm(p => ({ ...p, wasteWitness: e.target.value }))}
+                  placeholder="Same as witness if blank" />
+              </label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#64748b" }}>
+                <span>🗑️ Waste amount auto-calculated from vial remainder</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <label style={S.label}>Waste Amount (mL)<input style={S.input} type="number" min="0" step="0.01" value={form.wasteAmt} onChange={e => setForm(p => ({ ...p, wasteAmt: e.target.value }))} /></label>
+              <label style={S.label}>Waste Witness<input style={S.input} value={form.wasteWitness} onChange={e => setForm(p => ({ ...p, wasteWitness: e.target.value }))} /></label>
+              <label style={S.label}>Waste Reason<input style={S.input} value={form.wasteReason} onChange={e => setForm(p => ({ ...p, wasteReason: e.target.value }))} /></label>
+            </>
+          )}
 
           {/* Password confirmation — required for non-admin users (§80.136 compliance) */}
           {user.role !== "admin" && (
@@ -1205,6 +1260,7 @@ function PurchasesTab({ user }) {
   const [loading,  setLoading ] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [form,     setForm    ] = useState(blank());
+  const [inv,      setInv     ] = useState({});
   const [err,      setErr     ] = useState("");
   const [msg,      setMsg     ] = useState("");
   const [year,     setYear    ] = useState(String(now.getFullYear()));
@@ -1212,13 +1268,19 @@ function PurchasesTab({ user }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setRecords(await api(`/api/purchases?year=${year}`)); }
-    catch (ex) { setErr(ex.message); }
+    try {
+      const [recs, i] = await Promise.all([api(`/api/purchases?year=${year}`), api("/api/inventory")]);
+      setRecords(recs); setInv(i);
+    } catch (ex) { setErr(ex.message); }
     finally { setLoading(false); }
   }, [year]);
   useEffect(() => { load(); }, [load]);
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  // Look up vial_vol for the drug being purchased (if it already exists in inventory)
+  const existingDrug = (inv[form.stock] || []).find(d => d.drug === form.drug && d.conc === form.conc);
+  const purchaseVialVol = existingDrug?.vial_vol ? parseFloat(existingDrug.vial_vol) : null;
 
   async function submit(e) {
     e.preventDefault();
@@ -1249,7 +1311,14 @@ function PurchasesTab({ user }) {
             <label style={S.label}>Drug<input style={S.input} value={form.drug} onChange={f("drug")} required /></label>
             <label style={S.label}>Concentration<input style={S.input} value={form.conc} onChange={f("conc")} required /></label>
             <label style={S.label}>Unit<input style={S.input} value={form.unit} onChange={f("unit")} /></label>
-            <label style={S.label}>Quantity<input style={S.input} type="number" min="0.01" step="0.01" value={form.qty} onChange={f("qty")} required /></label>
+            <label style={S.label}>{purchaseVialVol ? `Quantity (vials, ${purchaseVialVol} mL each)` : "Quantity (mL)"}
+              <input style={S.input} type="number" min="1" step={purchaseVialVol ? "1" : "0.01"} value={form.qty} onChange={f("qty")} required />
+            </label>
+            {purchaseVialVol && form.qty && (
+              <div style={{ fontSize: 12, color: "#64748b", display: "flex", alignItems: "center" }}>
+                = {(parseFloat(form.qty) * purchaseVialVol).toFixed(1)} mL total will be added to inventory
+              </div>
+            )}
             <label style={S.label}>Supplier<input style={S.input} value={form.supplier} onChange={f("supplier")} required /></label>
             <label style={S.label}>Supplier DEA #<input style={S.input} value={form.supplierDEA} onChange={f("supplierDEA")} required /></label>
             <label style={S.label}>Manufacturer<input style={S.input} value={form.manufacturer} onChange={f("manufacturer")} required /></label>

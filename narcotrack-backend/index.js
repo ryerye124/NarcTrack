@@ -170,6 +170,10 @@ async function migrate() {
     // 14b. Stock limits — max_qty per inventory row
     await client.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS max_qty NUMERIC`);
 
+    // 15. Vial-based tracking — vial_vol stores mL per vial for each inventory item
+    await client.query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS vial_vol NUMERIC`);
+    await client.query(`ALTER TABLE pending_administrations ADD COLUMN IF NOT EXISTS vial_vol NUMERIC`);
+
     // 14. Agency compliance metadata — required for DOH form exports
     const agencyMetaCols = [
       ["agency_code",        "TEXT"],   // NYS EMS Agency Code #
@@ -783,10 +787,16 @@ app.get("/api/inventory", auth, async (req, res) => {
 app.post("/api/inventory", auth, adminOnly, async (req, res) => {
   try {
     const d = req.body;
+    const vialVol = d.vialVol ? parseFloat(d.vialVol) : null;
+    // If vial_vol provided, qty input is in vials — convert to mL
+    const qtyMl = vialVol ? parseFloat(d.qty) * vialVol : parseFloat(d.qty);
     const { rows } = await pool.query(
-      `INSERT INTO inventory (stock,drug,conc,unit,qty,min_qty,manufacturer,lot,supplier,supplier_dea,agency_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [d.stock,d.drug,d.conc,d.unit,d.qty,d.minQty||5,
+      `INSERT INTO inventory (stock,drug,conc,unit,qty,min_qty,max_qty,vial_vol,manufacturer,lot,supplier,supplier_dea,agency_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [d.stock,d.drug,d.conc,d.unit||"mL",qtyMl,
+       vialVol ? (parseFloat(d.minQty)||1) * vialVol : (parseFloat(d.minQty)||5),
+       vialVol && d.maxQty ? parseFloat(d.maxQty) * vialVol : (d.maxQty ? parseFloat(d.maxQty) : null),
+       vialVol,
        d.manufacturer,d.lot,d.supplier,d.supplierDEA,req.user.agency_id]
     );
     res.status(201).json(rows[0]);
@@ -810,9 +820,18 @@ app.get("/api/inventory/alerts", auth, async (req, res) => {
 // Update min/max stock limits per inventory row
 app.patch("/api/inventory/:id/limits", auth, adminOnly, async (req, res) => {
   try {
-    const minQty = parseFloat(req.body.minQty);
+    // Fetch vial_vol so we can convert vial inputs to mL for storage
+    const { rows: cur } = await pool.query(
+      "SELECT vial_vol FROM inventory WHERE id=$1 AND agency_id=$2",
+      [req.params.id, req.user.agency_id]
+    );
+    if (!cur.length) return res.status(404).json({ error: "Not found" });
+    const vialVol = cur[0].vial_vol ? parseFloat(cur[0].vial_vol) : null;
+
+    // Frontend sends values in vials when vial_vol is set, so multiply back to mL
+    const minQty = parseFloat(req.body.minQty) * (vialVol || 1);
     const maxQty = req.body.maxQty !== undefined && req.body.maxQty !== ""
-      ? parseFloat(req.body.maxQty)
+      ? parseFloat(req.body.maxQty) * (vialVol || 1)
       : null;
     if (isNaN(minQty) || minQty < 0)
       return res.status(400).json({ error: "minQty must be a non-negative number" });
@@ -822,7 +841,6 @@ app.patch("/api/inventory/:id/limits", auth, adminOnly, async (req, res) => {
       "UPDATE inventory SET min_qty=$1, max_qty=$2 WHERE id=$3 AND agency_id=$4 RETURNING *",
       [minQty, maxQty, req.params.id, req.user.agency_id]
     );
-    if (!rows.length) return res.status(404).json({ error: "Not found" });
     res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -869,35 +887,42 @@ app.post("/api/pending", auth, authLimiter, async (req, res) => {
   try {
     await client.query("BEGIN");
     const { rows: inv } = await client.query(
-      "SELECT qty FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
+      "SELECT qty,vial_vol FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
       [d.stock, d.drug, d.conc, req.user.agency_id]
     );
     if (!inv[0]) return res.status(404).json({ error: "Drug not found in this stock" });
     const doseQty = parseFloat(d.doseQty);
     if (isNaN(doseQty) || doseQty <= 0)
       return res.status(400).json({ error: "Invalid dose quantity" });
-    if (inv[0].qty < doseQty)
+
+    // Vial-based: deduct full vial, auto-waste the remainder
+    const vialVol = inv[0].vial_vol ? parseFloat(inv[0].vial_vol) : null;
+    const deductQty = vialVol || doseQty;
+    const autoWasteAmt = vialVol ? Math.max(0, vialVol - doseQty) : (d.wasteAmt ? parseFloat(d.wasteAmt) : 0);
+
+    if (inv[0].qty < deductQty)
       return res.status(400).json({ error: "Insufficient inventory" });
 
     const { rows } = await client.query(
       `INSERT INTO pending_administrations
        (stock,drug,conc,dose,dose_qty,route,run_id,patient_name,complaint,
         provider_num,provider_name,md_name,md_sig,receiving_hospital,
-        hospital_record_num,witness,waste_amt,waste_witness,waste_reason,logged_by,agency_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+        hospital_record_num,witness,waste_amt,waste_witness,waste_reason,logged_by,agency_id,vial_vol)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING *`,
       [d.stock,d.drug,d.conc,d.dose,doseQty,d.route,d.runId,d.patientName,
        d.complaint,d.providerNum,d.providerName,d.mdName,d.mdSig,
        d.receivingHospital,d.hospitalRecordNum,d.witness,
-       d.wasteAmt||0,d.wasteWitness||"",d.wasteReason||"",req.user.username,req.user.agency_id]
+       autoWasteAmt,d.wasteWitness||d.witness||"",d.wasteReason||(vialVol?"Vial remainder":""),
+       req.user.username,req.user.agency_id,vialVol]
     );
     await client.query(
       "UPDATE inventory SET qty=qty-$1,updated_at=NOW() WHERE stock=$2 AND drug=$3 AND conc=$4 AND agency_id=$5",
-      [doseQty,d.stock,d.drug,d.conc,req.user.agency_id]
+      [deductQty,d.stock,d.drug,d.conc,req.user.agency_id]
     );
     // Return current inventory level so frontend can surface low-stock warning immediately
     const { rows: [updatedInv] } = await client.query(
-      "SELECT stock,drug,conc,unit,qty,min_qty FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
+      "SELECT stock,drug,conc,unit,qty,min_qty,vial_vol FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
       [d.stock,d.drug,d.conc,req.user.agency_id]
     );
     await client.query("COMMIT");
@@ -967,9 +992,11 @@ app.post("/api/pending/:id/reject", auth, adminOnly, async (req, res) => {
        p.waste_amt,p.waste_witness,p.waste_reason,
        p.logged_by,req.user.username,req.body.reason,req.user.agency_id]
     );
+    // Restore the full amount that was deducted (vial if vial-tracked, else dose_qty)
+    const restoreQty = p.vial_vol ? parseFloat(p.vial_vol) : parseFloat(p.dose_qty);
     await client.query(
       "UPDATE inventory SET qty=qty+$1,updated_at=NOW() WHERE stock=$2 AND drug=$3 AND conc=$4 AND agency_id=$5",
-      [p.dose_qty,p.stock,p.drug,p.conc,req.user.agency_id]
+      [restoreQty,p.stock,p.drug,p.conc,req.user.agency_id]
     );
     await client.query("DELETE FROM pending_administrations WHERE id=$1 AND agency_id=$2", [req.params.id, req.user.agency_id]);
     await client.query("COMMIT");
@@ -1028,26 +1055,35 @@ app.post("/api/purchases", auth, adminOnly, async (req, res) => {
   try {
     await client.query("BEGIN");
     const d = req.body;
+
+    // Look up existing inventory item to get vial_vol
+    const { rows: existing } = await client.query(
+      "SELECT id,vial_vol FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
+      [d.stock,d.drug,d.conc,req.user.agency_id]
+    );
+    const vialVol = existing[0]?.vial_vol ? parseFloat(existing[0].vial_vol)
+                  : (d.vialVol ? parseFloat(d.vialVol) : null);
+    // qty from frontend is in vials when vial_vol known — convert to mL
+    const qtyMl = vialVol ? parseFloat(d.qty) * vialVol : parseFloat(d.qty);
+
     const { rows } = await client.query(
       `INSERT INTO purchases (stock,drug,conc,unit,qty,supplier,supplier_dea,manufacturer,lot,received_by,logged_by,agency_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [d.stock,d.drug,d.conc,d.unit,d.qty,d.supplier,d.supplierDEA,
+      [d.stock,d.drug,d.conc,d.unit||"mL",qtyMl,d.supplier,d.supplierDEA,
        d.manufacturer,d.lot,d.receivedBy,req.user.username,req.user.agency_id]
-    );
-    const { rows: existing } = await client.query(
-      "SELECT id FROM inventory WHERE stock=$1 AND drug=$2 AND conc=$3 AND agency_id=$4",
-      [d.stock,d.drug,d.conc,req.user.agency_id]
     );
     if (existing[0]) {
       await client.query(
         "UPDATE inventory SET qty=qty+$1,lot=$2,manufacturer=$3,supplier=$4,supplier_dea=$5,updated_at=NOW() WHERE id=$6 AND agency_id=$7",
-        [d.qty,d.lot,d.manufacturer,d.supplier,d.supplierDEA,existing[0].id,req.user.agency_id]
+        [qtyMl,d.lot,d.manufacturer,d.supplier,d.supplierDEA,existing[0].id,req.user.agency_id]
       );
     } else {
       await client.query(
-        `INSERT INTO inventory (stock,drug,conc,unit,qty,min_qty,manufacturer,lot,supplier,supplier_dea,agency_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [d.stock,d.drug,d.conc,d.unit||"mL",d.qty,d.minQty||5,d.manufacturer,d.lot,d.supplier,d.supplierDEA,req.user.agency_id]
+        `INSERT INTO inventory (stock,drug,conc,unit,qty,min_qty,vial_vol,manufacturer,lot,supplier,supplier_dea,agency_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [d.stock,d.drug,d.conc,d.unit||"mL",qtyMl,
+         vialVol ? (parseFloat(d.minQty)||1)*vialVol : (parseFloat(d.minQty)||5),
+         vialVol,d.manufacturer,d.lot,d.supplier,d.supplierDEA,req.user.agency_id]
       );
     }
     await client.query("COMMIT");
