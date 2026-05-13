@@ -600,7 +600,7 @@ function LogAdminTab({ user, onStockChange: onAlertRefresh }) {
 
   useEffect(() => { api("/api/inventory").then(setInv).catch(() => {}); }, []);
 
-  const stockDrugs = inv[form.stock] || [];
+  const stockDrugs = (inv[form.stock] || []).filter(d => parseFloat(d.qty) > 0);
 
   // Live mL calculation
   const mlCalc = (form.doseAmount && form.conc)
@@ -1303,7 +1303,7 @@ function TransfersTab({ user }) {
   useEffect(() => { load(); }, [load]);
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const fromDrugs = inv[form.fromStock] || [];
+  const fromDrugs = (inv[form.fromStock] || []).filter(d => parseFloat(d.qty) > 0);
 
   // BUG-002 + BUG-003 fix: clear drug/conc/unit AND correct toStock when fromStock changes
   function onFromStockChange(e) {
@@ -1432,7 +1432,7 @@ function WasteTab({ user }) {
   useEffect(() => { load(); }, [load]);
 
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }));
-  const stockDrugs  = inv[form.stock] || [];
+  const stockDrugs  = (inv[form.stock] || []).filter(d => parseFloat(d.qty) > 0);
 
   async function submit(e) {
     e.preventDefault();
@@ -2751,7 +2751,7 @@ function WeeklyRoundTab({ user }) {
         </p>
         {err && <div style={S.errBox}>{err}</div>}
         {stocks.map((stock, si) => {
-          const drugs       = inv[stock] || [];
+          const drugs       = (inv[stock] || []).filter(d => parseFloat(d.qty) > 0);
           const stockIssues = drugs.filter(d => {
             const r = results[si]?.[d.id];
             if (!r) return false;
@@ -2845,7 +2845,7 @@ function WeeklyRoundTab({ user }) {
   // ── Stock inspection step ─────────────────────────────────────────────────────
   const si    = step;
   const stock = stocks[si];
-  const drugs = inv[stock] || [];
+  const drugs = (inv[stock] || []).filter(d => parseFloat(d.qty) > 0);
   const isLast = si === stocks.length - 1;
 
   return (
