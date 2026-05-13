@@ -2818,10 +2818,14 @@ function MainApp({ user, onLogout }) {
   }, []);
   useEffect(() => { refreshAlerts(); }, [refreshAlerts]);
 
-  // Use agency tab config from JWT if present, else fall back to defaults
-  const tabConfig = (user.agency_tabs && user.agency_tabs.length)
-    ? user.agency_tabs
-    : DEFAULT_TAB_CONFIG;
+  // Merge stored tab config with DEFAULT_TAB_CONFIG so newly added tabs always appear.
+  // Stored config controls visibility/order for existing tabs; new tabs are appended.
+  const tabConfig = (() => {
+    if (!user.agency_tabs || !user.agency_tabs.length) return DEFAULT_TAB_CONFIG;
+    const storedIds = new Set(user.agency_tabs.map(t => t.id));
+    const newTabs   = DEFAULT_TAB_CONFIG.filter(t => !storedIds.has(t.id));
+    return [...user.agency_tabs, ...newTabs];
+  })();
 
   const tabs = tabConfig
     .filter(t => t.visible !== false)
